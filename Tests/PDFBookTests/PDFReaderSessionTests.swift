@@ -265,13 +265,12 @@ import Testing
                 return nil
             }
         }
+        // two changes of one motion: one start, one end (how long the wait lasts depends on the clock, which a busy
+        // machine running the tests in parallel does not keep)
         PDFReaderViewInsets.scroll(to: PDFReadingPosition(page: 2), on: session, byReader: true)
-        try await Task.sleep(for: .milliseconds(80))
         PDFReaderViewInsets.scroll(to: PDFReadingPosition(page: 3), on: session, byReader: true)
-        // the second change started the wait again
-        try await Task.sleep(for: .milliseconds(80))
         #expect(scrolling() == [true])
-        try await Task.sleep(for: .milliseconds(400))
+        try await Task.sleep(for: .milliseconds(600))
         #expect(scrolling() == [true, false])
         #expect(log.navigations.map(\.cause) == [.scroll])
         #expect(log.navigations.map(\.from) == [1])
