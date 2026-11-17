@@ -53,7 +53,7 @@ struct Reader: View {
 
     init(url: URL) throws {
         let document = try PDFBookDocument(url: url)
-        _session = State(initialValue: PDFReaderSession(document: document, settings: PDFReaderSettings(layout: .scroll)))
+        _session = State(initialValue: PDFReaderSession(document: document, layout: PDFReaderLayout(mode: .scroll)))
     }
 
     var body: some View {
@@ -68,7 +68,7 @@ struct Reader: View {
 ```
 
 - `PDFReaderSession.position` is `Codable`; pass a stored one as `initialPosition` to continue where the reader stopped.
-- `session.settings` switches between `.scroll` and `.pages`, one page and two, left-to-right and right-to-left, while the
+- `session.layout` switches between `.scroll` and `.pages`, one page and two, left-to-right and right-to-left, while the
   reader stays at the same place. The zoom starts fitted to the view; the reader can change it, and it is not stored.
 - `go(toPage:)`, `go(to:)` (a position, a `PDFFragment`, an outline entry), `show(_:)` (a search hit) move the reader and
   report a `.navigated` event with the cause `.jump` when the reader ends up somewhere else.

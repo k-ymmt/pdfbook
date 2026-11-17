@@ -27,11 +27,11 @@ import Testing
     let folder = try! TemporaryFolder()
     static let size = CGSize(width: 640, height: 800)
 
-    private func session(_ settings: PDFReaderSettings = PDFReaderSettings(), at position: PDFReadingPosition? = nil,
+    private func session(_ layout: PDFReaderLayout = PDFReaderLayout(), at position: PDFReadingPosition? = nil,
                          direction: String? = nil) throws -> (PDFReaderSession, EventLog)
     {
         let document = try PDFBookDocument(url: folder.write(Fixture.paper(direction: direction).data(), named: "paper.pdf"))
-        let session = PDFReaderSession(document: document, settings: settings, initialPosition: position)
+        let session = PDFReaderSession(document: document, layout: layout, initialPosition: position)
         let log = EventLog()
         session.onEvent = { log.events.append($0) }
         session.layOut(size: Self.size)
@@ -104,7 +104,7 @@ import Testing
     }
 
     @Test func thePagedLayoutShowsOnePageAndTurnsIt() async throws {
-        let (session, log) = try session(PDFReaderSettings(layout: .pages))
+        let (session, log) = try session(PDFReaderLayout(mode: .pages))
         #expect(session.position == .top(ofPage: 1, pageCount: 8))
         #expect(session.visiblePages == [1])
         session.turnPage(forward: true)
@@ -123,7 +123,7 @@ import Testing
     }
 
     @Test func aSpreadIsNamedByItsFirstPageAndTheCoverStandsAlone() async throws {
-        let (session, _) = try session(PDFReaderSettings(layout: .pages, twoPages: true))
+        let (session, _) = try session(PDFReaderLayout(mode: .pages, twoPages: true))
         #expect(session.visiblePages == [1])
         session.turnPage(forward: true)
         #expect(session.position?.page == 2)
@@ -137,11 +137,11 @@ import Testing
         let (session, log) = try session()
         await session.go(toPage: 5)
         log.events = []
-        session.settings.layout = .pages
+        session.layout.mode = .pages
         #expect(session.position?.page == 5)
-        session.settings.layout = .scroll
+        session.layout.mode = .scroll
         #expect(session.position?.page == 5)
-        session.settings.direction = .rightToLeft
+        session.layout.direction = .rightToLeft
         #expect(session.position?.page == 5)
         #expect(log.navigations.isEmpty)
         #expect(session.pdfView.displaysRTL)
@@ -204,7 +204,7 @@ import Testing
     }
 
     @Test func aRightToLeftBookIsTurnedTheOtherWay() throws {
-        let (session, _) = try session(PDFReaderSettings(layout: .pages, direction: .rightToLeft), direction: "R2L")
+        let (session, _) = try session(PDFReaderLayout(mode: .pages, direction: .rightToLeft), direction: "R2L")
         #expect(session.document.pageDirection == .rightToLeft)
         PDFReaderViewInsets.tap(at: CGPoint(x: 20, y: 400), on: session)
         #expect(session.position?.page == 2)
@@ -213,7 +213,7 @@ import Testing
     }
 
     @Test func tapsOnTheEdgesTurnThePageAndTheMiddleIsATap() throws {
-        let (session, log) = try session(PDFReaderSettings(layout: .pages))
+        let (session, log) = try session(PDFReaderLayout(mode: .pages))
         PDFReaderViewInsets.tap(at: CGPoint(x: 620, y: 400), on: session)
         #expect(session.position?.page == 2)
         PDFReaderViewInsets.tap(at: CGPoint(x: 20, y: 400), on: session)

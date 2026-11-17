@@ -10,23 +10,23 @@ import UIKit
 import AppKit
 #endif
 
-/// How a PDF is laid out on screen.
-nonisolated public struct PDFReaderSettings: Equatable, Sendable {
-    public enum Layout: Hashable, Sendable {
+/// How a PDF is laid out on screen: the mode, one page or two, and which way the pages advance.
+nonisolated public struct PDFReaderLayout: Equatable, Sendable {
+    public enum Mode: Hashable, Sendable {
         /// All pages in one vertical strip.
         case scroll
         /// One page (or one spread) at a time.
         case pages
     }
 
-    public var layout: Layout
+    public var mode: Mode
     /// Two pages side by side, the first page alone (a cover).
     public var twoPages: Bool
     /// Which way the pages advance (decides the sides of a spread and the direction of a page turn).
     public var direction: PDFPageDirection
 
-    public init(layout: Layout = .scroll, twoPages: Bool = false, direction: PDFPageDirection = .leftToRight) {
-        self.layout = layout
+    public init(mode: Mode = .scroll, twoPages: Bool = false, direction: PDFPageDirection = .leftToRight) {
+        self.mode = mode
         self.twoPages = twoPages
         self.direction = direction
     }
@@ -114,8 +114,8 @@ public final class PDFReaderSession {
     public let document: PDFBookDocument
 
     /// The layout. Changing it keeps the reader at the same place.
-    @ObservationIgnored public var settings: PDFReaderSettings {
-        didSet { if settings != oldValue { applySettings() } }
+    @ObservationIgnored public var layout: PDFReaderLayout {
+        didSet { if layout != oldValue { applyLayout() } }
     }
 
     /// Where the reader is; nil until the first page is shown.
@@ -170,9 +170,9 @@ public final class PDFReaderSession {
     }
 
     /// - Parameter initialPosition: where to start; nil for the first page.
-    public init(document: PDFBookDocument, settings: PDFReaderSettings = PDFReaderSettings(), initialPosition: PDFReadingPosition? = nil) {
+    public init(document: PDFBookDocument, layout: PDFReaderLayout = PDFReaderLayout(), initialPosition: PDFReadingPosition? = nil) {
         self.document = document
-        self.settings = settings
+        self.layout = layout
         self.initialPosition = initialPosition
         view = ReaderPDFView(frame: .zero)
         view.session = self
@@ -185,15 +185,15 @@ public final class PDFReaderSession {
     // MARK: Layout
 
     private func configureView(rebuild: Bool) {
-        let paged = settings.layout == .pages
+        let paged = layout.mode == .pages
         #if canImport(UIKit)
         // the page view controller reads the mode, the direction and the book flag when it is made
         if view.isUsingPageViewController, rebuild || !paged { view.usePageViewController(false, withViewOptions: nil) }
         #endif
         view.displayDirection = .vertical
-        view.displaysRTL = settings.direction == .rightToLeft
-        view.displaysAsBook = settings.twoPages
-        view.displayMode = switch (paged, settings.twoPages) {
+        view.displaysRTL = layout.direction == .rightToLeft
+        view.displaysAsBook = layout.twoPages
+        view.displayMode = switch (paged, layout.twoPages) {
         case (false, false): .singlePageContinuous
         case (false, true): .twoUpContinuous
         case (true, false): .singlePage
@@ -206,7 +206,7 @@ public final class PDFReaderSession {
         view.applyContentInsets(top: effectiveInsets.top, bottom: effectiveInsets.bottom)
     }
 
-    private func applySettings() {
+    private func applyLayout() {
         let anchor = position
         isCommanding = true
         endMotion(report: false)
@@ -243,7 +243,7 @@ public final class PDFReaderSession {
     }
 
     private var effectiveInsets: (top: CGFloat, bottom: CGFloat) {
-        settings.layout == .scroll ? contentInsets : (0, 0)
+        layout.mode == .scroll ? contentInsets : (0, 0)
     }
 
     /// The part of the view at its top and bottom that something else covers (bars over a full-screen page), in the
@@ -251,7 +251,7 @@ public final class PDFReaderSession {
     func setContentInsets(top: CGFloat, bottom: CGFloat) {
         guard contentInsets.top != top || contentInsets.bottom != bottom else { return }
         contentInsets = (top, bottom)
-        guard settings.layout == .scroll else { return }
+        guard layout.mode == .scroll else { return }
         let anchor = position
         isCommanding = true
         view.applyContentInsets(top: top, bottom: bottom)
@@ -304,19 +304,19 @@ public final class PDFReaderSession {
         guard count > 0 else { return nil }
         let visible = Set(view.visiblePages.compactMap(pageNumber))
         let current = pageNumber(view.currentPage)
-        if settings.layout == .pages {
+        if layout.mode == .pages {
             var page = current ?? visible.min()
             // a spread is named by its first page
-            if settings.twoPages, let current, let first = visible.min(), visible.contains(current), current - first == 1 { page = first }
+            if layout.twoPages, let current, let first = visible.min(), visible.contains(current), current - first == 1 { page = first }
             guard let page else { return nil }
-            let shown = settings.twoPages ? visible.filter { $0 == page || $0 == page + 1 }.sorted() : [page]
+            let shown = layout.twoPages ? visible.filter { $0 == page || $0 == page + 1 }.sorted() : [page]
             return (.top(ofPage: page, pageCount: count), shown.isEmpty ? [page] : shown)
         }
         // the page at the top edge (looked up a point below it: the edge itself may lie between two pages); of a row of
         // two, the earlier one
         let y = topY
         var top: (page: PDFPage, number: Int)?
-        for share in settings.twoPages ? [0.25, 0.75] : [0.5] {
+        for share in layout.twoPages ? [0.25, 0.75] : [0.5] {
             let probe = CGPoint(x: view.bounds.minX + view.bounds.width * share, y: view.yFromTop(effectiveInsets.top + 1))
             guard let page = view.page(for: probe, nearest: true), let number = pageNumber(page) else { continue }
             if top == nil || number < top!.number { top = (page, number) }
@@ -358,7 +358,7 @@ public final class PDFReaderSession {
 
     private func place(of position: PDFReadingPosition?) -> Place {
         guard let position else { return Place(page: 0, offset: 0) }
-        return Place(page: position.page, offset: settings.layout == .scroll ? Int((position.offset * 2000).rounded()) : 0)
+        return Place(page: position.page, offset: layout.mode == .scroll ? Int((position.offset * 2000).rounded()) : 0)
     }
 
     // MARK: Moving
@@ -373,7 +373,7 @@ public final class PDFReaderSession {
         }
         let number = document.clampedPage(position.page)
         guard let page = document.pdf.page(at: number - 1) else { return }
-        if settings.layout == .scroll {
+        if layout.mode == .scroll {
             let geometry = PDFBookDocument.geometry(of: page)
             let y = position.offset * Double(geometry.displayedSize.height)
             let target = geometry.page(CGPoint(x: 0, y: y))
@@ -395,7 +395,7 @@ public final class PDFReaderSession {
         let fromPlace = place
         endMotion(report: true)
         relayout = nil
-        if settings.layout == .scroll {
+        if layout.mode == .scroll {
             isCommanding = true
             body()
             restore(position)
@@ -468,7 +468,7 @@ public final class PDFReaderSession {
     /// In the paged layout, turns to the next (true) or previous page or spread. Does nothing at either end and in
     /// the scroll layout.
     public func turnPage(forward: Bool) {
-        guard hasStarted, settings.layout == .pages, forward ? view.canGoToNextPage : view.canGoToPreviousPage else { return }
+        guard hasStarted, layout.mode == .pages, forward ? view.canGoToNextPage : view.canGoToPreviousPage else { return }
         relayout = nil
         pending = Pending(cause: .pageTurn, from: position, deadline: Date().addingTimeInterval(0.6))
         if forward { view.goToNextPage(nil) } else { view.goToPreviousPage(nil) }
@@ -480,7 +480,7 @@ public final class PDFReaderSession {
     /// The current page or the visible pages changed (a notification of the view).
     func pageObserved() {
         guard hasStarted, !isCommanding else { return }
-        guard settings.layout == .pages else {
+        guard layout.mode == .pages else {
             scrollObserved()
             return
         }
@@ -503,7 +503,7 @@ public final class PDFReaderSession {
 
     /// The scroll offset changed (observed by the view).
     func scrollObserved() {
-        guard hasStarted, !isCommanding, settings.layout == .scroll else { return }
+        guard hasStarted, !isCommanding, layout.mode == .scroll else { return }
         if let anchor = relayoutAnchor {
             restore(anchor)
             refresh()
@@ -570,9 +570,9 @@ public final class PDFReaderSession {
             break
         }
         clearSearchHighlight()
-        if settings.layout == .pages, view.bounds.width > 0 {
+        if layout.mode == .pages, view.bounds.width > 0 {
             let share = (point.x - view.bounds.minX) / view.bounds.width
-            let leftToRight = settings.direction == .leftToRight
+            let leftToRight = layout.direction == .leftToRight
             if share < 0.25 {
                 turnPage(forward: !leftToRight)
                 return
@@ -620,8 +620,8 @@ public final class PDFReaderSession {
     /// A key of the paged layout: the arrows turn the page the way it lies (in a right-to-left book the left arrow
     /// goes on). False when the key is not the session's.
     func handle(_ key: ReaderPDFView.Key) -> Bool {
-        guard hasStarted, settings.layout == .pages else { return false }
-        let leftToRight = settings.direction == .leftToRight
+        guard hasStarted, layout.mode == .pages else { return false }
+        let leftToRight = layout.direction == .leftToRight
         switch key {
         case .left: turnPage(forward: !leftToRight)
         case .right: turnPage(forward: leftToRight)
