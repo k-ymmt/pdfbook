@@ -372,8 +372,12 @@ public final class PDFReaderSession {
         let geometry = PDFBookDocument.geometry(of: top.page)
         let height = geometry.displayedSize.height
         let inPage = view.convert(CGPoint(x: view.bounds.midX, y: y), to: top.page)
+        // A page put at the top is measured a fraction of a point below it where the view rounds its scroll offset to
+        // pixels (UIKit): less than half a point is the top
+        var distance = Double(geometry.displayed(inPage).y)
+        if distance < 0.5 { distance = 0 }
         // rounded: the same place measured twice differs in the last bits
-        let offset = height > 0 ? min(max(0, (Double(geometry.displayed(inPage).y / height) * 1_000_000).rounded() / 1_000_000), 0.999_999) : 0
+        let offset = height > 0 ? min(max(0, (distance / Double(height) * 1_000_000).rounded() / 1_000_000), 0.999_999) : 0
         let position = PDFReadingPosition(page: top.number, offset: offset, totalProgression: (Double(top.number - 1) + offset) / Double(count))
         return (position, visible.isEmpty ? [top.number] : visible.sorted())
     }
