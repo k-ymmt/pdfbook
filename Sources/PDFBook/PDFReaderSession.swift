@@ -158,6 +158,8 @@ public final class PDFReaderSession {
     @ObservationIgnored private var lastCommandEnd = Date.distantPast
     @ObservationIgnored private var pending: Pending?
     @ObservationIgnored private var lastPendingID = 0
+    /// The expectation a move is waiting for (`move(to:cause:)`): valid until that move stops waiting.
+    @ObservationIgnored private var awaitedPendingID: Int?
     @ObservationIgnored private var motion: Motion?
     /// Waits for the scrolling to stop: one task per motion, not one per change of the offset.
     @ObservationIgnored private var motionEnd: Task<Void, Never>?
@@ -455,12 +457,13 @@ public final class PDFReaderSession {
             pageObserved()
             // The page view controller (iOS) reports the new page a moment later. A later move replaces what is
             // expected: this one then stops waiting and leaves the other's expectation alone.
+            // while this move waits, its expectation does not run out by the clock (a busy main actor wakes it late)
+            awaitedPendingID = expected
+            defer { if awaitedPendingID == expected { awaitedPendingID = nil } }
             var tries = 0
             let target = document.clampedPage(position.page)
             while pending?.id == expected, tries < 12, holdsPageReports || !visiblePages.contains(target) {
                 try? await Task.sleep(for: .milliseconds(40))
-                // still waited for: it does not run out while this move waits (a busy main actor wakes it late)
-                if pending?.id == expected { pending?.deadline = Date().addingTimeInterval(0.6) }
                 pageObserved()
                 tries += 1
             }
@@ -541,7 +544,7 @@ public final class PDFReaderSession {
         let old = position
         refresh()
         guard let old, let new = position, old.page != new.page else { return }
-        if let pending, pending.deadline > Date() {
+        if let pending, pending.deadline > Date() || pending.id == awaitedPendingID {
             self.pending = nil
             if let cause = pending.cause { onEvent(.navigated(cause: cause, from: pending.from, to: new)) }
         } else {
