@@ -265,12 +265,19 @@ import Testing
                 return nil
             }
         }
+        // past the moment after the layout in which the session puts the place back (`Relayout`)
+        try await Task.sleep(for: .milliseconds(400))
         // two changes of one motion: one start, one end (how long the wait lasts depends on the clock, which a busy
         // machine running the tests in parallel does not keep)
         PDFReaderViewInsets.scroll(to: PDFReadingPosition(page: 2), on: session, byReader: true)
         PDFReaderViewInsets.scroll(to: PDFReadingPosition(page: 3), on: session, byReader: true)
         #expect(scrolling() == [true])
-        try await Task.sleep(for: .milliseconds(600))
+        // the end is waited for by a task that holds the session weakly: keep it
+        try await withExtendedLifetime(session) {
+            for _ in 0 ..< 50 where scrolling().count < 2 {
+                try await Task.sleep(for: .milliseconds(50))
+            }
+        }
         #expect(scrolling() == [true, false])
         #expect(log.navigations.map(\.cause) == [.scroll])
         #expect(log.navigations.map(\.from) == [1])
