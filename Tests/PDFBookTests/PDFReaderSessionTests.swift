@@ -235,8 +235,9 @@ import Testing
         async let first: Void = session.go(toPage: 3)
         try await Task.sleep(for: .milliseconds(300))
         async let second: Void = session.go(toPage: 6)
-        // the first move has given up waiting by now (12 x 40 ms); the second is still expected
-        try await Task.sleep(for: .milliseconds(300))
+        // the first move has stopped waiting (the second replaced what it expected); the second is still expected. Well
+        // inside the second's 0.6 s, so that a busy machine (tests run in parallel) does not let it run out
+        try await Task.sleep(for: .milliseconds(150))
         session.holdsPageReports = false
         _ = await (first, second)
         #expect(session.position?.page == 6)
