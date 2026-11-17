@@ -302,7 +302,9 @@ import AppKit
         // the start of the first line lies in the left quarter of the view, where a tap turns the page
         #if canImport(UIKit)
         // the page view controller of iOS builds the view of a page only in a window
-        let window = UIWindow()
+        let scene = try #require(UIApplication.shared.connectedScenes.lazy.compactMap { $0 as? UIWindowScene }.first,
+                                 "the tests run in a host that has a window scene")
+        let window = UIWindow(windowScene: scene)
         window.frame = CGRect(origin: .zero, size: Self.size)
         window.addSubview(session.pdfView)
         window.isHidden = false
