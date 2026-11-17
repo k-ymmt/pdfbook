@@ -675,7 +675,7 @@ public final class PDFReaderSession {
 
     func linkKind(at point: CGPoint) -> LinkKind? {
         guard let page = view.page(for: point, nearest: false) else { return nil }
-        let inPage = view.convert(point, to: page)
+        let inPage = view.pagePoint(point, on: page)
         // every annotation under the point, not only the topmost: an overlay drawn over a link lies above it
         guard let annotation = page.annotations.last(where: { $0.type == "Link" && $0.bounds.contains(inPage) }) else { return nil }
         return annotation.url != nil || annotation.action is PDFActionURL ? .outside : .inside
@@ -721,9 +721,9 @@ public final class PDFReaderSession {
     private func markHit(at point: CGPoint) -> PDFReaderEvent? {
         guard let page = view.page(for: point, nearest: false), let number = pageNumber(page) else { return nil }
         let geometry = PDFBookDocument.geometry(of: page)
-        let displayed = geometry.displayed(view.convert(point, to: page))
+        let displayed = geometry.displayed(view.pagePoint(point, on: page))
         func inView(_ rects: [CGRect]) -> [CGRect] {
-            rects.map { view.rectFromTopLeft(view.convert(geometry.page($0), from: page)) }
+            rects.map { view.rectFromTopLeft(view.viewRect(geometry.page($0), on: page)) }
         }
         var seen = Set<String>()
         for overlay in overlays.reversed() where seen.insert(overlay.id).inserted {
@@ -839,6 +839,13 @@ public final class PDFReaderSession {
         return session.view.menu(for: event)?.items.map(\.title) ?? []
     }
     #endif
+
+    /// Where a rectangle of a page (displayed-page coordinates) is on screen, from the view's top-left corner.
+    public static func rectInView(_ rect: CGRect, onPage number: Int, on session: PDFReaderSession) -> CGRect? {
+        guard let page = session.document.pdf.page(at: number - 1) else { return nil }
+        let geometry = PDFBookDocument.geometry(of: page)
+        return session.view.rectFromTopLeft(session.view.viewRect(geometry.page(rect), on: page))
+    }
 
     /// A tap at a point of the view (from its top-left corner).
     public static func tap(at point: CGPoint, on session: PDFReaderSession) {

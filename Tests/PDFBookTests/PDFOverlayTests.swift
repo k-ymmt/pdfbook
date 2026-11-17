@@ -301,10 +301,16 @@ import AppKit
         let (session, log, _) = try session(Fixture.paper(), PDFReaderLayout(mode: .pages))
         // the start of the first line lies in the left quarter of the view, where a tap turns the page
         let place = try fragment(of: "Chapter", onPage: 1, in: session)
-        let page = try #require(session.document.pdf.page(at: 0))
-        let geometry = try #require(session.document.geometry(ofPage: 1))
-        let inView = session.pdfView.convert(geometry.page(place.parts[0].rects[0].cgRect), from: page)
-        let point = Self.centreFromTopLeft(inView)
+        let rect = place.parts[0].rects[0].cgRect
+        // from the view's top-left corner (the page view controller of iOS lays the page out itself)
+        let inView = try #require(PDFReaderViewInsets.rectInView(rect, onPage: 1, on: session))
+        // the page fills the view as far as it fits, centred: the rectangle is where that puts it
+        let size = try #require(session.document.geometry(ofPage: 1)).displayedSize
+        let scale = min(Self.size.width / size.width, Self.size.height / size.height)
+        let expected = CGRect(x: (Self.size.width - size.width * scale) / 2 + rect.minX * scale, y: (Self.size.height - size.height * scale) / 2 + rect.minY * scale,
+                              width: rect.width * scale, height: rect.height * scale)
+        #expect(abs(inView.midX - expected.midX) < 12 && abs(inView.midY - expected.midY) < 12, "\(inView) vs \(expected)")
+        let point = CGPoint(x: inView.midX, y: inView.midY)
         try #require(point.x < Self.size.width * 0.25)
         await session.go(toPage: 2)
         await session.go(toPage: 1)
