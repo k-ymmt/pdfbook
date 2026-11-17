@@ -49,6 +49,13 @@ public final class PDFBookDocument {
     public private(set) var outlineIndex = PDFOutlineIndex(entries: [])
     /// The direction the file asks for (`/ViewerPreferences /Direction`), nil when it does not say.
     public private(set) var pageDirection: PDFPageDirection?
+    /// The file's own text marks and notes once `annotations()` has read them; nil before.
+    public internal(set) var loadedAnnotations: [PDFDocumentAnnotation]?
+    /// The annotations a reader session has put on the pages for its overlays (`PDFReaderSession.overlays`). They
+    /// are on this document's pages, so the record is here: a session that follows another on the same document
+    /// takes away what the earlier one drew. In the order they were added to the pages, which is the order PDFKit
+    /// draws them in.
+    var drawnOverlays: [(overlay: PDFOverlay, annotations: [(page: PDFPage, annotation: PDFAnnotation)])] = []
 
     /// Opens the file. A password-protected document opens locked (`isLocked`): unlock it before showing it.
     public init(url: URL) throws(OpenError) {
@@ -231,7 +238,8 @@ nonisolated public struct PDFBookInfo: Hashable, Sendable {
 /// A second `PDFDocument` on the same file, used only inside this actor: reading a page's text takes time on a
 /// dense page, and a search reads every page.
 actor PDFTextStore {
-    private let document: PDFDocument?
+    let document: PDFDocument?
+    var cachedAnnotations: [PDFDocumentAnnotation]?
     private var cache: [Int: PDFPageText] = [:]
     private var cached: [Int] = []
     private static let cacheLimit = 48

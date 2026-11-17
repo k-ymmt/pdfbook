@@ -58,6 +58,12 @@ nonisolated public enum PDFReaderEvent: Sendable {
     case selectionChanged(hasSelection: Bool)
     /// A link to somewhere outside the document was tapped. The view does not open it.
     case externalLink(URL)
+    /// An overlay (`PDFReaderSession.overlays`) was tapped. `rects` are its rectangles on the tapped page, in the
+    /// view's coordinates measured from the view's top-left corner (what a popover is anchored to).
+    case overlayTapped(id: String, rects: [CGRect])
+    /// One of the file's own text marks or notes was tapped (reported once `PDFBookDocument.annotations()` has read
+    /// them). `rects` as for an overlay.
+    case annotationTapped(id: String, rects: [CGRect])
 }
 
 /// One match of a search of the document's text.
@@ -128,6 +134,17 @@ public final class PDFReaderSession {
     /// Receives the events. Called on the main actor.
     @ObservationIgnored public var onEvent: (PDFReaderEvent) -> Void = { _ in }
 
+    /// What the application draws over the pages: highlights, underlines, lines through the text, frames. Setting
+    /// the list replaces what was drawn before (from the first overlay that changed on). In memory only: the file is
+    /// never written. They are drawn in the list's order, and a tap on one is reported as `.overlayTapped`: where
+    /// two lie over each other, the later one in the list is on top and gets the tap.
+    ///
+    /// The marks are on the pages of the document, so one session at a time draws on a document: a new session
+    /// starts with none and takes away what an earlier session on the same document left.
+    @ObservationIgnored public var overlays: [PDFOverlay] = [] {
+        didSet { if overlays != oldValue { applyOverlays() } }
+    }
+
     @ObservationIgnored let view: ReaderPDFView
 
     /// How far above a rectangle the view is put when going to it, in points of the page: the line is not glued to
@@ -191,6 +208,8 @@ public final class PDFReaderSession {
         view.session = self
         view.document = document.pdf
         configureView(rebuild: true)
+        // what an earlier session on this document drew is not this session's
+        applyOverlays()
     }
 
     private var pageCount: Int { document.pageCount }
@@ -607,6 +626,11 @@ public final class PDFReaderSession {
         case nil:
             break
         }
+        // a mark under the tap is what the tap was for: not a page turn, not the bars
+        if let hit = markHit(at: point) {
+            onEvent(hit)
+            return
+        }
         clearSearchHighlight()
         if layout.mode == .pages, view.bounds.width > 0 {
             let share = (point.x - view.bounds.minX) / view.bounds.width
@@ -632,8 +656,66 @@ public final class PDFReaderSession {
 
     func linkKind(at point: CGPoint) -> LinkKind? {
         guard let page = view.page(for: point, nearest: false) else { return nil }
-        guard let annotation = page.annotation(at: view.convert(point, to: page)), annotation.type == "Link" else { return nil }
+        let inPage = view.convert(point, to: page)
+        // every annotation under the point, not only the topmost: an overlay drawn over a link lies above it
+        guard let annotation = page.annotations.last(where: { $0.type == "Link" && $0.bounds.contains(inPage) }) else { return nil }
         return annotation.url != nil || annotation.action is PDFActionURL ? .outside : .inside
+    }
+
+    // MARK: Overlays
+
+    private func applyOverlays() {
+        // the same id twice: the later one, at the later one's place
+        var last: [String: Int] = [:]
+        for (index, overlay) in overlays.enumerated() { last[overlay.id] = index }
+        let wanted = overlays.enumerated().filter { last[$0.element.id] == $0.offset }.map(\.element)
+        // PDFKit draws a page's annotations in the order they were added, and a tap goes to the later overlay of the
+        // list: what is drawn has to be in the list's order. So everything from the first difference on is taken
+        // off and added again (a change of one overlay must not lift it above the ones after it)
+        let drawn = document.drawnOverlays
+        var kept = 0
+        while kept < drawn.count, kept < wanted.count, drawn[kept].overlay == wanted[kept] { kept += 1 }
+        guard kept < drawn.count || kept < wanted.count else { return }
+        var changed: [PDFPage] = []
+        for entry in drawn[kept...] {
+            for (page, annotation) in entry.annotations {
+                page.removeAnnotation(annotation)
+                changed.append(page)
+            }
+        }
+        document.drawnOverlays.removeSubrange(kept...)
+        for overlay in wanted[kept...] {
+            let annotations = overlay.annotations(in: document.pdf)
+            for (page, annotation) in annotations {
+                page.addAnnotation(annotation)
+                changed.append(page)
+            }
+            document.drawnOverlays.append((overlay, annotations))
+        }
+        var seen = Set<ObjectIdentifier>()
+        for page in changed where seen.insert(ObjectIdentifier(page)).inserted {
+            view.annotationsChanged(on: page)
+        }
+    }
+
+    /// The overlay or, failing that, the document's own mark at a point of the view, as the event that reports it.
+    private func markHit(at point: CGPoint) -> PDFReaderEvent? {
+        guard let page = view.page(for: point, nearest: false), let number = pageNumber(page) else { return nil }
+        let geometry = PDFBookDocument.geometry(of: page)
+        let displayed = geometry.displayed(view.convert(point, to: page))
+        func inView(_ rects: [CGRect]) -> [CGRect] {
+            rects.map { view.rectFromTopLeft(view.convert(geometry.page($0), from: page)) }
+        }
+        var seen = Set<String>()
+        for overlay in overlays.reversed() where seen.insert(overlay.id).inserted {
+            let rects = PDFOverlay.rects(of: overlay.fragment, onPage: number, hitBy: displayed)
+            if !rects.isEmpty { return .overlayTapped(id: overlay.id, rects: inView(rects)) }
+        }
+        for annotation in (document.loadedAnnotations ?? []).reversed() where annotation.fragment.page == number {
+            let rects = PDFOverlay.rects(of: annotation.fragment, onPage: number, hitBy: displayed)
+            if !rects.isEmpty { return .annotationTapped(id: annotation.id, rects: inView(rects)) }
+        }
+        return nil
     }
 
     /// The view is about to follow a link inside the document.
@@ -673,26 +755,7 @@ public final class PDFReaderSession {
 
     /// The selected text as a place; nil without a selection.
     public var selectedText: PDFSelectedText? {
-        guard let selection = view.currentSelection else { return nil }
-        var parts: [(page: Int, rects: [CGRect])] = []
-        var lines: [String] = []
-        for line in selection.selectionsByLine() {
-            guard let page = line.pages.first, let number = pageNumber(page) else { continue }
-            let bounds = line.bounds(for: page)
-            guard !bounds.isEmpty else { continue }
-            let rect = PDFBookDocument.geometry(of: page).displayed(bounds)
-            if parts.last?.page == number {
-                parts[parts.count - 1].rects.append(rect)
-            } else {
-                parts.append((number, [rect]))
-            }
-            lines.append(line.string ?? "")
-        }
-        let fragment = PDFFragment(parts: parts.map { part in
-            PDFFragment.Part(page: part.page, rects: PDFLineRects.merged(part.rects).map(PDFFragment.Rect.init(enclosing:)))
-        })
-        guard let fragment else { return nil }
-        return PDFSelectedText(fragment: fragment, text: PDFPageText.joined(lines))
+        view.currentSelection.flatMap { PDFBookDocument.selectedText(of: $0, in: document.pdf) }
     }
 
     public func clearSelection() {
@@ -708,6 +771,11 @@ public final class PDFReaderSession {
     }
 
     @_spi(Testing) public var pdfView: PDFView { view }
+
+    /// A selection as `selectedText` would report it, without making it the view's selection.
+    @_spi(Testing) public func selectedText(of selection: PDFSelection) -> PDFSelectedText? {
+        PDFBookDocument.selectedText(of: selection, in: document.pdf)
+    }
 
     /// While true the session does not hear the view's page changes: the page view controller of iOS reports a page a
     /// moment after it was asked for, and this is how a test makes that moment last.
@@ -738,6 +806,20 @@ public final class PDFReaderSession {
             session.view.go(to: PDFDestination(page: page, at: target))
             session.view.alignTop(of: target, on: page, inset: 0)
         }
+    }
+    #endif
+
+    #if !canImport(UIKit)
+    /// The titles of the menu a secondary click at a point of the view (from its top-left corner) opens, with
+    /// `actions` as the application's actions for a selection. The view has to be in a window.
+    public static func menuTitles(at point: CGPoint, actions: [PDFSelectionAction], on session: PDFReaderSession) -> [String] {
+        session.view.selectionActions = actions
+        let inView = CGPoint(x: session.view.bounds.minX + point.x, y: session.view.yFromTop(point.y))
+        guard let window = session.view.window,
+              let event = NSEvent.mouseEvent(with: .rightMouseDown, location: session.view.convert(inView, to: nil), modifierFlags: [], timestamp: 0,
+                                             windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+        else { return [] }
+        return session.view.menu(for: event)?.items.map(\.title) ?? []
     }
     #endif
 

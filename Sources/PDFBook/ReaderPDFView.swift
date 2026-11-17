@@ -101,6 +101,11 @@ final class ReaderPDFView: PDFView {
         bounds.minY + distance
     }
 
+    /// A rectangle of the view's coordinates, measured from the view's top-left corner with y down.
+    func rectFromTopLeft(_ rect: CGRect) -> CGRect {
+        rect.offsetBy(dx: -bounds.minX, dy: -bounds.minY)
+    }
+
     func layoutDocument() {
         layoutDocumentView()
         layoutIfNeeded()
@@ -260,6 +265,12 @@ final class ReaderPDFView: PDFView {
         isFlipped ? bounds.minY + distance : bounds.maxY - distance
     }
 
+    /// A rectangle of the view's coordinates, measured from the view's top-left corner with y down.
+    func rectFromTopLeft(_ rect: CGRect) -> CGRect {
+        let rect = rect.standardized
+        return CGRect(x: rect.minX - bounds.minX, y: isFlipped ? rect.minY - bounds.minY : bounds.maxY - rect.maxY, width: rect.width, height: rect.height)
+    }
+
     func layoutDocument() {
         layoutDocumentView()
         layoutSubtreeIfNeeded()
@@ -387,7 +398,18 @@ final class ReaderPDFView: PDFView {
     // MARK: The menu of a selection
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        let items = selectionItems()
+        var items = selectionItems()
+        if items.isEmpty, !selectionActions.isEmpty {
+            // With nothing selected PDFKit's menu is about the word under the pointer (it selects the word once the
+            // menu is up). That word gets the application's actions like any other selection: select it now
+            let point = convert(event.locationInWindow, from: nil)
+            if let page = page(for: point, nearest: false), let word = page.selectionForWord(at: convert(point, to: page)),
+               word.string?.contains(where: { !$0.isWhitespace }) == true
+            {
+                setCurrentSelection(word, animate: false)
+                items = selectionItems()
+            }
+        }
         guard !items.isEmpty else { return super.menu(for: event) }
         let menu = NSMenu()
         performers = items.map { item in { item.action.perform(item.selected) } }

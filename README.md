@@ -10,7 +10,9 @@ PDFKit draws the pages. The library adds what a reading app needs around it:
 - A reading position (page, how far down the page, share of the whole document) that survives a new size, a change of
   layout and a restart.
 - A reader session with events: position changes, moves with their cause (page turn, jump, link, scroll), scrolling,
-  taps that did nothing else, selection changes, links that lead outside.
+  taps that did nothing else, selection changes, links that lead outside, taps on a mark.
+- Marks drawn over the pages in memory (highlight, underline, strikethrough, outline), and the marks and notes the
+  file already has, as a list.
 - Layouts: one vertical strip of pages, or one page / one spread at a time; right-to-left books.
 - The text of a page in reading order: lines that wrap are joined, the columns of vertical Japanese text are put
   together and read from the right. Search over it finds phrases across line breaks.
@@ -76,7 +78,39 @@ struct Reader: View {
   right-to-left book), as do the arrow keys, Space and Page Up / Down on macOS.
 - `PDFReaderView.contentInsets(top:bottom:)` tells the scroll layout how much of the view is covered by bars.
 - `PDFReaderView.selectionActions(_:)` replaces the system's menu of a text selection; an action receives the selection
-  as a `PDFSelectedText` (its fragment and its text). `session.selectedText` reads the same at any time.
+  as a `PDFSelectedText` (its fragment and its text). `session.selectedText` reads the same at any time. On macOS a
+  secondary click on a word with nothing selected selects that word and shows the same actions.
+
+### Marks over the pages
+
+```swift
+session.overlays = [
+    PDFOverlay(id: "note-1", fragment: fragment, color: .init(red: 1, green: 0.8, blue: 0, alpha: 0.4)),
+    PDFOverlay(id: "note-2", fragment: other, color: .init(red: 0.1, green: 0.5, blue: 1), style: .underline),
+]
+session.onEvent = { event in
+    if case .overlayTapped(let id, let rects) = event { /* show something at rects (view coordinates) */ }
+}
+```
+
+- An overlay is drawn at a `PDFFragment`, one mark per rectangle, on every page the fragment names, in the order of
+  the list (a later overlay lies over an earlier one). Setting the list again redraws from the first overlay that
+  changed. The styles are `.highlight` (give the colour an alpha below 1), `.underline`, `.strikethrough` and
+  `.outline`. A rectangle taller than wide is a column of vertical text: its underline runs down its right side and
+  its strikethrough down its middle.
+- Overlays are PDFKit annotations added to the pages of the open document and never saved: the file stays as it was,
+  and the text, a search and `annotations()` do not see them. They belong to the document's pages, so one session at a
+  time draws on a document; a new session on the same document starts with none.
+- A tap on an overlay is reported as `.overlayTapped` and does nothing else (no `.tapped`, no page turn). Where
+  overlays lie over each other the later one in the list is reported. A tap on a link that lies under an overlay
+  is left to the link.
+- `document.annotations()` lists the text marks and notes the file itself contains (`PDFDocumentAnnotation`: kind,
+  place, the marked text, the comment, the colour). PDFKit draws them; once they have been read, a tap on one is
+  reported as `.annotationTapped`. Hidden annotations and notes without words are left out.
+- `document.text(in:)` is the text at a place, joined like the text of the selection the place came from;
+  `document.locate(_:near:)` finds a quote again (on the same page the match nearest to the old place, else the
+  nearest page that has it) for a mark whose file was replaced by another edition. A quote that runs over a page
+  break is not found.
 
 ### Password-protected files
 
@@ -146,8 +180,8 @@ page thumbnail, which stays within a few megabytes even when the first page is o
 
 ## What it does not do
 
-- It does not write annotations into the PDF or read the ones in it.
-- It does not draw highlights yet; a place is only something to go to.
+- It does not write annotations into the PDF: marks are drawn in memory and are the application's to store.
+- It lists the file's text marks and notes only; ink, shapes, stamps and form fields are drawn by PDFKit and not listed.
 - No OCR: a scan without a text layer has no text to select or search.
 
 ## Tests

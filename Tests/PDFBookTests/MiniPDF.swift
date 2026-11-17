@@ -5,12 +5,23 @@ import CoreGraphics
 /// links, an outline, a reading direction and a title. Enough structure for the tests, nothing a real file needs beyond.
 struct MiniPDF {
     struct Link { var rect: CGRect; var toPage: Int?; var url: String? }
+    /// An annotation of the file's own: a text mark ("Highlight", "Underline", "StrikeOut") over `quads`, or a note
+    /// ("Text") at `rect`. Rectangles are in the media box (y up).
+    struct Mark {
+        var subtype: String
+        var rect: CGRect
+        var quads: [CGRect] = []
+        var color: [CGFloat] = [1, 0.8, 0]
+        var contents: String?
+        var hidden = false
+    }
     struct Page {
         var lines: [String]
         var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
         var cropBox: CGRect?
         var rotate = 0
         var links: [Link] = []
+        var marks: [Mark] = []
         /// The baseline of the first line (in the media box)
         var origin = CGPoint(x: 72, y: 720)
         var fontSize: CGFloat = 14
@@ -66,12 +77,24 @@ struct MiniPDF {
             var dict = "<< /Type /Page /Parent \(pagesID) 0 R /MediaBox \(Self.rect(page.mediaBox)) /Resources << /Font << /F1 \(font) 0 R >> >> /Contents \(contentID) 0 R"
             if let crop = page.cropBox { dict += " /CropBox \(Self.rect(crop))" }
             if page.rotate != 0 { dict += " /Rotate \(page.rotate)" }
-            if !page.links.isEmpty {
+            if !page.links.isEmpty || !page.marks.isEmpty {
                 dict += " /Annots ["
                 for link in page.links {
                     dict += " << /Type /Annot /Subtype /Link /Rect \(Self.rect(link.rect)) /Border [0 0 0]"
                     if let to = link.toPage { dict += " /Dest [\(pageIDs[to]) 0 R /XYZ 0 792 0]" }
                     if let url = link.url { dict += " /A << /S /URI /URI \(Self.string(url)) >>" }
+                    dict += " >>"
+                }
+                for mark in page.marks {
+                    dict += " << /Type /Annot /Subtype /\(mark.subtype) /Rect \(Self.rect(mark.rect)) /F \(mark.hidden ? 2 : 4)"
+                    dict += " /C [\(mark.color.map(Self.fmt).joined(separator: " "))]"
+                    if !mark.quads.isEmpty {
+                        // top left, top right, bottom left, bottom right of each quadrilateral
+                        let points = mark.quads.flatMap { [$0.minX, $0.maxY, $0.maxX, $0.maxY, $0.minX, $0.minY, $0.maxX, $0.minY] }
+                        dict += " /QuadPoints [\(points.map(Self.fmt).joined(separator: " "))]"
+                    }
+                    if mark.subtype == "Text" { dict += " /Name /Note" }
+                    if let contents = mark.contents { dict += " /Contents \(Self.string(contents))" }
                     dict += " >>"
                 }
                 dict += " ]"
