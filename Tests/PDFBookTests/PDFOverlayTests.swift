@@ -159,7 +159,7 @@ import Testing
         let place = try fragment(of: "quick brown fox", onPage: 1, in: session)
         func colours() -> [PDFOverlay.Color?] {
             (session.document.pdf.page(at: 0)?.annotations ?? []).filter { $0.type == "Square" }.map { annotation in
-                annotation.color.usingColorSpace(.sRGB).map { PDFOverlay.Color(red: Double($0.redComponent), green: Double($0.greenComponent), blue: Double($0.blueComponent)) }
+                sRGB(annotation.color)
             }
         }
         let red = PDFOverlay.Color(red: 1, green: 0, blue: 0), green = PDFOverlay.Color(red: 0, green: 1, blue: 0)
@@ -476,3 +476,20 @@ import Testing
         #expect(await session.document.text(in: selected.fragment) == selected.text)
     }
 }
+
+/// A colour's sRGB components (AppKit converts the colour space first; UIKit reports them in extended sRGB).
+#if canImport(UIKit)
+import UIKit
+
+private func sRGB(_ color: UIColor) -> PDFOverlay.Color? {
+    var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+    guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return nil }
+    return PDFOverlay.Color(red: Double(red), green: Double(green), blue: Double(blue))
+}
+#else
+import AppKit
+
+private func sRGB(_ color: NSColor) -> PDFOverlay.Color? {
+    color.usingColorSpace(.sRGB).map { PDFOverlay.Color(red: Double($0.redComponent), green: Double($0.greenComponent), blue: Double($0.blueComponent)) }
+}
+#endif
