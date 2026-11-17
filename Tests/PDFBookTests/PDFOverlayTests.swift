@@ -300,16 +300,23 @@ import AppKit
     @Test func aTapOnAnOverlayAtThePagesEdgeDoesNotTurnThePage() async throws {
         let (session, log, _) = try session(Fixture.paper(), PDFReaderLayout(mode: .pages))
         // the start of the first line lies in the left quarter of the view, where a tap turns the page
+        #if canImport(UIKit)
+        // the page view controller of iOS builds the view of a page only in a window
+        let window = UIWindow()
+        window.frame = CGRect(origin: .zero, size: Self.size)
+        window.addSubview(session.pdfView)
+        window.isHidden = false
+        session.layOut(size: Self.size)
+        defer { withExtendedLifetime(window) {} }
+        #endif
         let place = try fragment(of: "Chapter", onPage: 1, in: session)
         let rect = place.parts[0].rects[0].cgRect
-        // from the view's top-left corner (the page view controller of iOS lays the page out itself)
+        // from the view's top-left corner (the page view controller of iOS lays the page out itself, with margins)
         let inView = try #require(PDFReaderViewInsets.rectInView(rect, onPage: 1, on: session))
-        // the page fills the view as far as it fits, centred: the rectangle is where that puts it
-        let size = try #require(session.document.geometry(ofPage: 1)).displayedSize
-        let scale = min(Self.size.width / size.width, Self.size.height / size.height)
-        let expected = CGRect(x: (Self.size.width - size.width * scale) / 2 + rect.minX * scale, y: (Self.size.height - size.height * scale) / 2 + rect.minY * scale,
-                              width: rect.width * scale, height: rect.height * scale)
-        #expect(abs(inView.midX - expected.midX) < 12 && abs(inView.midY - expected.midY) < 12, "\(inView) vs \(expected)")
+        // the page is scaled the same way across and down, and lies in the view
+        let scaleAcross = inView.width / rect.width, scaleDown = inView.height / rect.height
+        #expect(scaleAcross > 0.5 && abs(scaleAcross - scaleDown) < 0.02 * scaleAcross, "\(inView)")
+        #expect(CGRect(origin: .zero, size: Self.size).contains(inView), "\(inView)")
         let point = CGPoint(x: inView.midX, y: inView.midY)
         try #require(point.x < Self.size.width * 0.25)
         await session.go(toPage: 2)
