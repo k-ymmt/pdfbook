@@ -129,12 +129,14 @@ import Testing
 
     @Test func aSecondSearchFindsTheSame() async throws {
         let document = try paper()
-        // the first search reads every page, the second one what was kept of them
+        // the first search reads every page, the second one what was kept of them. Thirteen lines of each page say
+        // "lorem ipsum", except the two lines of page 3 that hold the phrase that wraps
+        let expected = 8 * 13 - 2
         for _ in 0 ..< 2 {
             var hits: [PDFSearchHit] = []
             for try await hit in document.search("lorem ipsum") { hits.append(hit) }
-            #expect(hits.count == 8 * 13)
-            #expect(hits.map(\.id) == Array(0 ..< 8 * 13))
+            #expect(hits.count == expected)
+            #expect(hits.map(\.id) == Array(0 ..< expected))
         }
     }
 
