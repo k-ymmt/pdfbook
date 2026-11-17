@@ -36,6 +36,16 @@ import AppKit
         return paper
     }
 
+    /// The middle of a rectangle of the view's coordinates, measured from the view's top-left corner (what a tap
+    /// takes): an AppKit view counts y up from its bottom edge, a UIKit view down from its top.
+    private static func centreFromTopLeft(_ rect: CGRect) -> CGPoint {
+        #if canImport(UIKit)
+        CGPoint(x: rect.midX, y: rect.midY)
+        #else
+        CGPoint(x: rect.midX, y: size.height - rect.midY)
+        #endif
+    }
+
     private func session(_ pdf: MiniPDF = Fixture.paper(), _ layout: PDFReaderLayout = PDFReaderLayout(),
                          at position: PDFReadingPosition? = nil) throws -> (PDFReaderSession, EventLog, URL)
     {
@@ -179,7 +189,7 @@ import AppKit
         let geometry = try #require(session.document.geometry(ofPage: 1))
         let inView = session.pdfView.convert(geometry.page(place.parts[0].rects[0].cgRect), from: page)
         log.events = []
-        PDFReaderViewInsets.tap(at: CGPoint(x: inView.midX, y: Self.size.height - inView.midY), on: session)
+        PDFReaderViewInsets.tap(at: Self.centreFromTopLeft(inView), on: session)
         #expect({ if case .overlayTapped(id: "a", _) = log.events.first { true } else { false } }())
     }
 
@@ -226,7 +236,7 @@ import AppKit
         let geometry = try #require(session.document.geometry(ofPage: 1))
         // where the middle of the rectangle is on screen, from the view's top-left corner
         let inView = session.pdfView.convert(geometry.page(place.parts[0].rects[0].cgRect), from: page)
-        let point = CGPoint(x: inView.midX, y: Self.size.height - inView.midY)
+        let point = Self.centreFromTopLeft(inView)
         log.events = []
         PDFReaderViewInsets.tap(at: point, on: session)
         #expect(log.events.count == 1)
@@ -255,7 +265,7 @@ import AppKit
         let geometry = try #require(session.document.geometry(ofPage: 1))
         let inView = session.pdfView.convert(geometry.page(place.parts[0].rects[0].cgRect), from: page)
         log.events = []
-        PDFReaderViewInsets.tap(at: CGPoint(x: inView.midX, y: Self.size.height - inView.midY), on: session)
+        PDFReaderViewInsets.tap(at: Self.centreFromTopLeft(inView), on: session)
         #expect(!log.events.contains { if case .overlayTapped = $0 { true } else { false } })
         #expect(!log.events.contains { if case .tapped = $0 { true } else { false } })
     }
@@ -294,7 +304,7 @@ import AppKit
         let page = try #require(session.document.pdf.page(at: 0))
         let geometry = try #require(session.document.geometry(ofPage: 1))
         let inView = session.pdfView.convert(geometry.page(place.parts[0].rects[0].cgRect), from: page)
-        let point = CGPoint(x: inView.midX, y: Self.size.height - inView.midY)
+        let point = Self.centreFromTopLeft(inView)
         try #require(point.x < Self.size.width * 0.25)
         await session.go(toPage: 2)
         await session.go(toPage: 1)
@@ -364,7 +374,7 @@ import AppKit
         let geometry = try #require(session.document.geometry(ofPage: 2))
         // the highlighted second line of page 2: baseline 696 in the media box
         let inView = session.pdfView.convert(CGRect(x: 100, y: 694, width: 10, height: 10), from: page)
-        let point = CGPoint(x: inView.midX, y: Self.size.height - inView.midY)
+        let point = Self.centreFromTopLeft(inView)
         _ = geometry
         log.events = []
         PDFReaderViewInsets.tap(at: point, on: session)
