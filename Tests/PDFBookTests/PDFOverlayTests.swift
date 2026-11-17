@@ -4,6 +4,12 @@ import Foundation
 import PDFKit
 import Testing
 
+#if canImport(UIKit)
+import UIKit
+#else
+import AppKit
+#endif
+
 /// What the application draws over the pages (overlays), the file's own marks, and finding a quote again.
 @MainActor @Suite struct PDFOverlayTests {
     let folder = try! TemporaryFolder()
@@ -479,16 +485,12 @@ import Testing
 
 /// A colour's sRGB components (AppKit converts the colour space first; UIKit reports them in extended sRGB).
 #if canImport(UIKit)
-import UIKit
-
 private func sRGB(_ color: UIColor) -> PDFOverlay.Color? {
     var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
     guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return nil }
     return PDFOverlay.Color(red: Double(red), green: Double(green), blue: Double(blue))
 }
 #else
-import AppKit
-
 private func sRGB(_ color: NSColor) -> PDFOverlay.Color? {
     color.usingColorSpace(.sRGB).map { PDFOverlay.Color(red: Double($0.redComponent), green: Double($0.greenComponent), blue: Double($0.blueComponent)) }
 }
