@@ -190,7 +190,12 @@ public final class PDFReaderSession {
         // the page view controller reads the mode, the direction and the book flag when it is made
         if view.isUsingPageViewController, rebuild || !paged { view.usePageViewController(false, withViewOptions: nil) }
         #endif
+        #if canImport(UIKit)
+        // the page view controller turns along the display direction: sideways for pages, like a book
+        view.displayDirection = paged ? .horizontal : .vertical
+        #else
         view.displayDirection = .vertical
+        #endif
         view.displaysRTL = layout.direction == .rightToLeft
         view.displaysAsBook = layout.twoPages
         view.displayMode = switch (paged, layout.twoPages) {
