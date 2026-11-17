@@ -36,6 +36,33 @@ private func lines(_ string: String, bounds: (Int, String) -> CGRect? = { _, _ i
         #expect(text.matches(of: "zebra").isEmpty)
     }
 
+    @Test func matchesFarDownALongPageMapToTheirLines() throws {
+        // many lines: the pieces a match maps to are looked up, not scanned from the first
+        let page = (0 ..< 400).map { "line \($0) of the page" }.joined(separator: "\n")
+        let text = PDFPageText(lines: lines(page))
+        let source = page as NSString
+        let late = try #require(text.matches(of: "line 399 of").first)
+        #expect(late.sourceRanges.map { source.substring(with: $0) } == ["line 399 of"])
+        let across = try #require(text.matches(of: "page line 200").first)
+        #expect(across.sourceRanges.map { source.substring(with: $0) } == ["page", "line 200"])
+        #expect(text.matches(of: "of the page").count == 400)
+        #expect(text.matches(of: "of the page").map { $0.sourceRanges.count } == Array(repeating: 1, count: 400))
+    }
+
+    @Test func aQueryOfWhitespaceIsNothingToLookFor() {
+        #expect(PDFPageText.normalized("  \n\t ").isEmpty)
+        #expect(PDFPageText.normalized(" a \n b ") == "a b")
+    }
+
+    @Test func aSingleCharacterIsToldWithoutCountingALine() {
+        #expect("吾".isSingleCharacter)
+        #expect("👨‍👩‍👧".isSingleCharacter)
+        #expect("e\u{301}".isSingleCharacter)
+        #expect(!"".isSingleCharacter)
+        #expect(!"ab".isSingleCharacter)
+        #expect("xyz".dropFirst(2).isSingleCharacter)
+    }
+
     @Test func everyMatchIsReportedInOrder() {
         let page = "one two one\ntwo one"
         let text = PDFPageText(lines: lines(page))

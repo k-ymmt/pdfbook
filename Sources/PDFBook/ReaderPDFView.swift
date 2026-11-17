@@ -153,6 +153,53 @@ final class ReaderPDFView: PDFView {
         }
     }
 
+    // MARK: Page coordinates
+
+    /// A point of the view in the coordinates of a page it shows.
+    ///
+    /// While the page view controller shows the pages, `convert(_:to: page)` and `convert(_:from: page)` answer zero:
+    /// the page is mapped through the view the controller zooms (it covers the displayed page exactly) instead.
+    func pagePoint(_ point: CGPoint, on page: PDFPage) -> CGPoint {
+        guard let zoomed = zoomedPageView(showing: page), zoomed.bounds.width > 0, zoomed.bounds.height > 0 else { return convert(point, to: page) }
+        let geometry = PDFBookDocument.geometry(of: page)
+        let size = geometry.displayedSize
+        let inZoomed = zoomed.convert(point, from: self)
+        let displayed = CGPoint(x: (inZoomed.x - zoomed.bounds.minX) / zoomed.bounds.width * size.width,
+                                y: (inZoomed.y - zoomed.bounds.minY) / zoomed.bounds.height * size.height)
+        return geometry.page(displayed)
+    }
+
+    /// A rectangle of a page (page coordinates) in the view's coordinates.
+    func viewRect(_ rect: CGRect, on page: PDFPage) -> CGRect {
+        guard let zoomed = zoomedPageView(showing: page), zoomed.bounds.width > 0, zoomed.bounds.height > 0 else { return convert(rect, from: page) }
+        let geometry = PDFBookDocument.geometry(of: page)
+        let size = geometry.displayedSize
+        guard size.width > 0, size.height > 0 else { return .zero }
+        let displayed = geometry.displayed(rect)
+        let sx = zoomed.bounds.width / size.width, sy = zoomed.bounds.height / size.height
+        let inZoomed = CGRect(x: zoomed.bounds.minX + displayed.minX * sx, y: zoomed.bounds.minY + displayed.minY * sy,
+                              width: displayed.width * sx, height: displayed.height * sy)
+        return zoomed.convert(inZoomed, to: self)
+    }
+
+    /// The view the page view controller zooms for the page on screen: of the scroll views that have one, the one that
+    /// covers most of this view. nil outside the page view controller and for another page than the current one.
+    private func zoomedPageView(showing page: PDFPage) -> UIView? {
+        guard isUsingPageViewController, page == currentPage else { return nil }
+        var best: (view: UIView, area: CGFloat)?
+        func visit(_ view: UIView) {
+            if let scrollView = view as? UIScrollView, let zoomed = scrollView.delegate?.viewForZooming?(in: scrollView) {
+                let visible = zoomed.convert(zoomed.bounds, to: self).intersection(bounds)
+                let area = visible.isNull ? 0 : visible.width * visible.height
+                if area > (best?.area ?? 0) { best = (zoomed, area) }
+                return
+            }
+            for subview in view.subviews where !subview.isHidden { visit(subview) }
+        }
+        visit(self)
+        return best?.view
+    }
+
     /// Scrolls vertically so that a point of a page sits `inset` below the view's top edge (as far as the document
     /// can scroll).
     func alignTop(of point: CGPoint, on page: PDFPage, inset: CGFloat) {
@@ -347,6 +394,16 @@ final class ReaderPDFView: PDFView {
             scrollView.contentInsets = wanted
             scrollView.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
         }
+    }
+
+    /// A point of the view in the coordinates of a page it shows.
+    func pagePoint(_ point: CGPoint, on page: PDFPage) -> CGPoint {
+        convert(point, to: page)
+    }
+
+    /// A rectangle of a page (page coordinates) in the view's coordinates.
+    func viewRect(_ rect: CGRect, on page: PDFPage) -> CGRect {
+        convert(rect, from: page)
     }
 
     /// Scrolls vertically so that a point of a page sits `inset` below the view's top edge (as far as the document

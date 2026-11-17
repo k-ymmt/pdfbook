@@ -165,7 +165,8 @@ public struct PDFFragment: Hashable, Sendable, CustomStringConvertible {
         var text = String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), value)
         while text.hasSuffix("0") { text.removeLast() }
         if text.hasSuffix(".") { text.removeLast() }
-        return text
+        // a small negative number rounds to "-0"
+        return text == "-0" ? "0" : text
     }
 
     // MARK: Order

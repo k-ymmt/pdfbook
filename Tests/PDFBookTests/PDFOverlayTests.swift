@@ -4,6 +4,12 @@ import Foundation
 import PDFKit
 import Testing
 
+#if canImport(UIKit)
+import UIKit
+#else
+import AppKit
+#endif
+
 /// What the application draws over the pages (overlays), the file's own marks, and finding a quote again.
 @MainActor @Suite struct PDFOverlayTests {
     let folder = try! TemporaryFolder()
@@ -29,6 +35,27 @@ import Testing
         ]
         return paper
     }
+
+    /// The middle of a rectangle of the view's coordinates, measured from the view's top-left corner (what a tap
+    /// takes): an AppKit view counts y up from its bottom edge, a UIKit view down from its top.
+    private static func centreFromTopLeft(_ rect: CGRect) -> CGPoint {
+        #if canImport(UIKit)
+        CGPoint(x: rect.midX, y: rect.midY)
+        #else
+        CGPoint(x: rect.midX, y: size.height - rect.midY)
+        #endif
+    }
+
+    #if canImport(UIKit)
+    /// Tells the view controllers inside a view that they appear, as a window would.
+    private static func appear(_ view: UIView) {
+        if let controller = view.next as? UIViewController, controller.view === view {
+            controller.beginAppearanceTransition(true, animated: false)
+            controller.endAppearanceTransition()
+        }
+        view.subviews.forEach(appear)
+    }
+    #endif
 
     private func session(_ pdf: MiniPDF = Fixture.paper(), _ layout: PDFReaderLayout = PDFReaderLayout(),
                          at position: PDFReadingPosition? = nil) throws -> (PDFReaderSession, EventLog, URL)
@@ -159,7 +186,7 @@ import Testing
         let place = try fragment(of: "quick brown fox", onPage: 1, in: session)
         func colours() -> [PDFOverlay.Color?] {
             (session.document.pdf.page(at: 0)?.annotations ?? []).filter { $0.type == "Square" }.map { annotation in
-                annotation.color.usingColorSpace(.sRGB).map { PDFOverlay.Color(red: Double($0.redComponent), green: Double($0.greenComponent), blue: Double($0.blueComponent)) }
+                sRGB(annotation.color)
             }
         }
         let red = PDFOverlay.Color(red: 1, green: 0, blue: 0), green = PDFOverlay.Color(red: 0, green: 1, blue: 0)
@@ -173,7 +200,7 @@ import Testing
         let geometry = try #require(session.document.geometry(ofPage: 1))
         let inView = session.pdfView.convert(geometry.page(place.parts[0].rects[0].cgRect), from: page)
         log.events = []
-        PDFReaderViewInsets.tap(at: CGPoint(x: inView.midX, y: Self.size.height - inView.midY), on: session)
+        PDFReaderViewInsets.tap(at: Self.centreFromTopLeft(inView), on: session)
         #expect({ if case .overlayTapped(id: "a", _) = log.events.first { true } else { false } }())
     }
 
@@ -220,7 +247,7 @@ import Testing
         let geometry = try #require(session.document.geometry(ofPage: 1))
         // where the middle of the rectangle is on screen, from the view's top-left corner
         let inView = session.pdfView.convert(geometry.page(place.parts[0].rects[0].cgRect), from: page)
-        let point = CGPoint(x: inView.midX, y: Self.size.height - inView.midY)
+        let point = Self.centreFromTopLeft(inView)
         log.events = []
         PDFReaderViewInsets.tap(at: point, on: session)
         #expect(log.events.count == 1)
@@ -249,7 +276,7 @@ import Testing
         let geometry = try #require(session.document.geometry(ofPage: 1))
         let inView = session.pdfView.convert(geometry.page(place.parts[0].rects[0].cgRect), from: page)
         log.events = []
-        PDFReaderViewInsets.tap(at: CGPoint(x: inView.midX, y: Self.size.height - inView.midY), on: session)
+        PDFReaderViewInsets.tap(at: Self.centreFromTopLeft(inView), on: session)
         #expect(!log.events.contains { if case .overlayTapped = $0 { true } else { false } })
         #expect(!log.events.contains { if case .tapped = $0 { true } else { false } })
     }
@@ -284,11 +311,21 @@ import Testing
     @Test func aTapOnAnOverlayAtThePagesEdgeDoesNotTurnThePage() async throws {
         let (session, log, _) = try session(Fixture.paper(), PDFReaderLayout(mode: .pages))
         // the start of the first line lies in the left quarter of the view, where a tap turns the page
+        #if canImport(UIKit)
+        // The page view controller of iOS builds the view of a page when it appears, which a view without a window
+        // never does (a package's tests have no window scene to make one in): it is told that it appears
+        Self.appear(session.pdfView)
+        session.layOut(size: Self.size)
+        #endif
         let place = try fragment(of: "Chapter", onPage: 1, in: session)
-        let page = try #require(session.document.pdf.page(at: 0))
-        let geometry = try #require(session.document.geometry(ofPage: 1))
-        let inView = session.pdfView.convert(geometry.page(place.parts[0].rects[0].cgRect), from: page)
-        let point = CGPoint(x: inView.midX, y: Self.size.height - inView.midY)
+        let rect = place.parts[0].rects[0].cgRect
+        // from the view's top-left corner (the page view controller of iOS lays the page out itself, with margins)
+        let inView = try #require(PDFReaderViewInsets.rectInView(rect, onPage: 1, on: session))
+        // the page is scaled the same way across and down, and lies in the view
+        let scaleAcross = inView.width / rect.width, scaleDown = inView.height / rect.height
+        #expect(scaleAcross > 0.5 && abs(scaleAcross - scaleDown) < 0.02 * scaleAcross, "\(inView)")
+        #expect(CGRect(origin: .zero, size: Self.size).contains(inView), "\(inView)")
+        let point = CGPoint(x: inView.midX, y: inView.midY)
         try #require(point.x < Self.size.width * 0.25)
         await session.go(toPage: 2)
         await session.go(toPage: 1)
@@ -358,7 +395,7 @@ import Testing
         let geometry = try #require(session.document.geometry(ofPage: 2))
         // the highlighted second line of page 2: baseline 696 in the media box
         let inView = session.pdfView.convert(CGRect(x: 100, y: 694, width: 10, height: 10), from: page)
-        let point = CGPoint(x: inView.midX, y: Self.size.height - inView.midY)
+        let point = Self.centreFromTopLeft(inView)
         _ = geometry
         log.events = []
         PDFReaderViewInsets.tap(at: point, on: session)
@@ -414,6 +451,7 @@ import Testing
         #expect(await document.locate("Page 7 line 2", near: PDFFragment(page: 1))?.page == 7)
         #expect(await document.locate("Page 2 line 9", near: PDFFragment(page: 99))?.page == 2)
         #expect(await document.locate("no such words anywhere", near: old) == nil)
+        #expect(await document.locate(" \n ", near: old) == nil)
 
         // on the page itself, the match nearest to the old place: "lorem ipsum" is on every line
         let line9 = try fragment(of: "Page 4 line 9", onPage: 4, in: session)
@@ -475,3 +513,16 @@ import Testing
         #expect(await session.document.text(in: selected.fragment) == selected.text)
     }
 }
+
+/// A colour's sRGB components (AppKit converts the colour space first; UIKit reports them in extended sRGB).
+#if canImport(UIKit)
+private func sRGB(_ color: UIColor) -> PDFOverlay.Color? {
+    var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+    guard color.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return nil }
+    return PDFOverlay.Color(red: Double(red), green: Double(green), blue: Double(blue))
+}
+#else
+private func sRGB(_ color: NSColor) -> PDFOverlay.Color? {
+    color.usingColorSpace(.sRGB).map { PDFOverlay.Color(red: Double($0.redComponent), green: Double($0.greenComponent), blue: Double($0.blueComponent)) }
+}
+#endif

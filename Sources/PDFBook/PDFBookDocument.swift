@@ -60,13 +60,12 @@ public final class PDFBookDocument {
     /// Opens the file. A password-protected document opens locked (`isLocked`): unlock it before showing it.
     public init(url: URL) throws(OpenError) {
         guard let pdf = PDFDocument(url: url) else { throw .unreadable }
+        // refused before the second document is opened
+        guard pdf.isLocked || pdf.pageCount > 0 else { throw .noPages }
         self.url = url
         self.pdf = pdf
         textStore = PDFTextStore(url: url)
-        if !pdf.isLocked {
-            guard pdf.pageCount > 0 else { throw .noPages }
-            readStructure()
-        }
+        if !pdf.isLocked { readStructure() }
     }
 
     // MARK: Password
@@ -77,7 +76,8 @@ public final class PDFBookDocument {
     /// Unlocks the document with the user or owner password. False when the password is wrong (or the document,
     /// once open, turns out to have no pages).
     public func unlock(password: String) async -> Bool {
-        guard pdf.isLocked else { return true }
+        // unlocked before: true only if that unlocking succeeded (a document without pages stays refused)
+        guard pdf.isLocked else { return pdf.pageCount > 0 }
         guard pdf.unlock(withPassword: password), !pdf.isLocked, pdf.pageCount > 0 else { return false }
         await textStore.unlock(password: password)
         readStructure()
@@ -89,15 +89,16 @@ public final class PDFBookDocument {
     public var pageCount: Int { pdf.pageCount }
 
     /// The document's title (the Info dictionary's `Title`), nil when it has none or is locked.
-    public var title: String? { attribute(PDFDocumentAttribute.titleAttribute) }
+    public var title: String? { Self.attribute(PDFDocumentAttribute.titleAttribute, of: pdf) }
 
     /// The document's author (`Author`).
-    public var author: String? { attribute(PDFDocumentAttribute.authorAttribute) }
+    public var author: String? { Self.attribute(PDFDocumentAttribute.authorAttribute, of: pdf) }
 
     /// Whether the document lets its text be copied (false: offer no "copy" or "quote" of a selection).
     public var allowsCopying: Bool { pdf.allowsCopying }
 
-    private func attribute(_ key: PDFDocumentAttribute) -> String? {
+    /// A text entry of the Info dictionary, trimmed; nil when it is missing or blank.
+    nonisolated static func attribute(_ key: PDFDocumentAttribute, of pdf: PDFDocument) -> String? {
         guard let value = pdf.documentAttributes?[key] as? String else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -158,14 +159,7 @@ public final class PDFBookDocument {
                 let pageIndex = pdf.index(for: page)
                 if pageIndex != NSNotFound {
                     pageNumber = pageIndex + 1
-                    let geometry = Self.geometry(of: page)
-                    // an unspecified coordinate is `kPDFDestinationUnspecifiedValue` (FLT_MAX)
-                    let point = destination.point
-                    if point.y < CGFloat(Float.greatestFiniteMagnitude) / 2, point.x < CGFloat(Float.greatestFiniteMagnitude) / 2 {
-                        top = min(max(0, Double(geometry.displayed(point).y)), Double(geometry.displayedSize.height))
-                    } else if point.y < CGFloat(Float.greatestFiniteMagnitude) / 2 {
-                        top = min(max(0, Double(geometry.displayed(CGPoint(x: geometry.cropBox.minX, y: point.y)).y)), Double(geometry.displayedSize.height))
-                    }
+                    top = Self.top(of: destination.point, on: Self.geometry(of: page))
                     entries.append(.init(title: label, page: pageIndex + 1, top: top))
                 }
             }
@@ -173,6 +167,17 @@ public final class PDFBookDocument {
             result.append(PDFOutlineItem(id: id, label: label, page: pageNumber, top: top, children: children))
         }
         return result
+    }
+
+    /// Where a destination's point lies, from the top of the displayed page (clamped to the page); 0 when the
+    /// destination does not say. An unspecified coordinate is `kPDFDestinationUnspecifiedValue` (FLT_MAX); a missing x
+    /// counts as the page's left edge.
+    nonisolated static func top(of point: CGPoint, on geometry: PDFPageGeometry) -> Double {
+        let unspecified = CGFloat(Float.greatestFiniteMagnitude) / 2
+        guard point.y.isFinite, point.y < unspecified else { return 0 }
+        let x = point.x.isFinite && point.x < unspecified ? point.x : geometry.cropBox.minX
+        let y = Double(geometry.displayed(CGPoint(x: x, y: point.y)).y)
+        return min(max(0, y), Double(geometry.displayedSize.height))
     }
 
     nonisolated static func pageDirection(of pdf: PDFDocument) -> PDFPageDirection? {
@@ -207,11 +212,8 @@ nonisolated public struct PDFBookInfo: Hashable, Sendable {
     public static func read(fileAt url: URL) -> PDFBookInfo? {
         guard let pdf = PDFDocument(url: url) else { return nil }
         guard !pdf.isLocked else { return PDFBookInfo(title: nil, author: nil, pageCount: 0, isLocked: true) }
-        func attribute(_ key: PDFDocumentAttribute) -> String? {
-            guard let value = (pdf.documentAttributes?[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
-            return value
-        }
-        return PDFBookInfo(title: attribute(PDFDocumentAttribute.titleAttribute), author: attribute(PDFDocumentAttribute.authorAttribute),
+        return PDFBookInfo(title: PDFBookDocument.attribute(PDFDocumentAttribute.titleAttribute, of: pdf),
+                           author: PDFBookDocument.attribute(PDFDocumentAttribute.authorAttribute, of: pdf),
                            pageCount: pdf.pageCount, isLocked: false)
     }
 
@@ -240,9 +242,15 @@ nonisolated public struct PDFBookInfo: Hashable, Sendable {
 actor PDFTextStore {
     let document: PDFDocument?
     var cachedAnnotations: [PDFDocumentAnnotation]?
-    private var cache: [Int: PDFPageText] = [:]
-    private var cached: [Int] = []
-    private static let cacheLimit = 48
+
+    /// The pages read so far, with when each was last asked for. The least recently used goes first once there are
+    /// more than `cacheLimit` pages and they hold more than `cacheBudget` bytes: a book of ordinary size is read
+    /// once, so a second search (the query typed further) does not read every page again.
+    private var cache: [Int: (text: PDFPageText, lastUse: Int)] = [:]
+    private var cacheSize = 0
+    private var uses = 0
+    static let cacheLimit = 48
+    static let cacheBudget = 8 << 20
 
     init(url: URL) {
         document = PDFDocument(url: url)
@@ -254,14 +262,23 @@ actor PDFTextStore {
 
     /// The text of a page (0-based). Empty when there is no such page or it has no text.
     func text(ofPage index: Int) -> PDFPageText {
-        if let text = cache[index] { return text }
+        uses += 1
+        if let entry = cache[index] {
+            cache[index]?.lastUse = uses
+            return entry.text
+        }
         guard let document, !document.isLocked, index >= 0, index < document.pageCount, let page = document.page(at: index) else {
             return PDFPageText(lines: [])
         }
         let text = Self.text(of: page)
-        cache[index] = text
-        cached.append(index)
-        if cached.count > Self.cacheLimit { cache[cached.removeFirst()] = nil }
+        cache[index] = (text, uses)
+        cacheSize += text.estimatedByteCount
+        while cache.count > Self.cacheLimit, cacheSize > Self.cacheBudget,
+              let oldest = cache.min(by: { $0.value.lastUse < $1.value.lastUse })
+        {
+            cache[oldest.key] = nil
+            cacheSize -= oldest.value.text.estimatedByteCount
+        }
         return text
     }
 
@@ -276,7 +293,7 @@ actor PDFTextStore {
             guard let text, range.length > 0 else { return }
             var bounds: CGRect?
             // `characterBounds(at:)` does not count line breaks, so its index is not the string's: measure through a selection
-            if text.count == 1, let selection = page.selection(for: range) {
+            if text.isSingleCharacter, let selection = page.selection(for: range) {
                 let rect = selection.bounds(for: page)
                 if !rect.isEmpty { bounds = geometry.displayed(rect) }
             }

@@ -235,8 +235,9 @@ import Testing
         async let first: Void = session.go(toPage: 3)
         try await Task.sleep(for: .milliseconds(300))
         async let second: Void = session.go(toPage: 6)
-        // the first move has given up waiting by now (12 x 40 ms); the second is still expected
-        try await Task.sleep(for: .milliseconds(300))
+        // the first move has stopped waiting (the second replaced what it expected); the second is still expected. Well
+        // inside the second's 0.6 s, so that a busy machine (tests run in parallel) does not let it run out
+        try await Task.sleep(for: .milliseconds(150))
         session.holdsPageReports = false
         _ = await (first, second)
         #expect(session.position?.page == 6)
@@ -254,6 +255,32 @@ import Testing
         // … the reader's scrolling is not
         PDFReaderViewInsets.scroll(to: PDFReadingPosition(page: 2, offset: 0.5), on: session, byReader: true)
         #expect(session.position?.page == 2)
+    }
+
+    @Test func aScrollEndsOnceTheOffsetStopsChanging() async throws {
+        let (session, log) = try session()
+        func scrolling() -> [Bool] {
+            log.events.compactMap { event in
+                if case .scrolling(let value) = event { return value }
+                return nil
+            }
+        }
+        // past the moment after the layout in which the session puts the place back (`Relayout`)
+        try await Task.sleep(for: .milliseconds(400))
+        // two changes of one motion: one start, one end (how long the wait lasts depends on the clock, which a busy
+        // machine running the tests in parallel does not keep)
+        PDFReaderViewInsets.scroll(to: PDFReadingPosition(page: 2), on: session, byReader: true)
+        PDFReaderViewInsets.scroll(to: PDFReadingPosition(page: 3), on: session, byReader: true)
+        #expect(scrolling() == [true])
+        for _ in 0 ..< 50 where scrolling().count < 2 {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        // the end is waited for by a task that holds the session weakly: keep it until here
+        withExtendedLifetime(session) {}
+        #expect(scrolling() == [true, false])
+        #expect(log.navigations.map(\.cause) == [.scroll])
+        #expect(log.navigations.map(\.from) == [1])
+        #expect(log.navigations.map(\.to) == [3])
     }
 
     @Test func aJumpDuringAScrollStartsFromWhereTheScrollHadComeTo() async throws {
