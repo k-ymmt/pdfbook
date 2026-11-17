@@ -459,6 +459,8 @@ public final class PDFReaderSession {
             let target = document.clampedPage(position.page)
             while pending?.id == expected, tries < 12, holdsPageReports || !visiblePages.contains(target) {
                 try? await Task.sleep(for: .milliseconds(40))
+                // still waited for: it does not run out while this move waits (a busy main actor wakes it late)
+                if pending?.id == expected { pending?.deadline = Date().addingTimeInterval(0.6) }
                 pageObserved()
                 tries += 1
             }
