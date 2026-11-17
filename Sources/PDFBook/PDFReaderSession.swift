@@ -47,6 +47,8 @@ nonisolated public enum PDFNavigationCause: Hashable, Sendable {
 nonisolated public enum PDFReaderEvent: Sendable {
     /// The position changed, by whatever means (also sent once when the first page is shown).
     case positionChanged(PDFReadingPosition)
+    /// The pages on screen changed while the position stayed (one page instead of two, another layout).
+    case visiblePagesChanged([Int])
     /// The reader moved to another place. Not sent for the first page or when the layout changes.
     case navigated(cause: PDFNavigationCause, from: PDFReadingPosition?, to: PDFReadingPosition)
     /// In the scroll layout: the reader started (true) or stopped (false) scrolling.
@@ -138,6 +140,7 @@ public final class PDFReaderSession {
     @ObservationIgnored private var isCommanding = false
     @ObservationIgnored private var lastCommandEnd = Date.distantPast
     @ObservationIgnored private var pending: Pending?
+    @ObservationIgnored private var lastPendingID = 0
     @ObservationIgnored private var motion: Motion?
     @ObservationIgnored private var motionEnd: Task<Void, Never>?
     @ObservationIgnored private var contentInsets: (top: CGFloat, bottom: CGFloat) = (0, 0)
@@ -148,6 +151,8 @@ public final class PDFReaderSession {
     /// A move that is expected to show up in what the view reports (a page change of the paged layout, a link the
     /// view follows itself). `cause` nil: expected, and not to be reported as a navigation.
     private struct Pending {
+        /// Which expectation this is: whoever waits for it gives up only its own.
+        var id: Int
         var cause: PDFNavigationCause?
         var from: PDFReadingPosition?
         var deadline: Date
@@ -159,6 +164,14 @@ public final class PDFReaderSession {
     private struct Relayout {
         var anchor: PDFReadingPosition
         var until: Date
+    }
+
+    /// Expects a move to show up in what the view reports within `seconds`; replaces what was expected before.
+    @discardableResult
+    private func expect(_ cause: PDFNavigationCause?, from: PDFReadingPosition?, within seconds: TimeInterval = 0.6) -> Int {
+        lastPendingID += 1
+        pending = Pending(id: lastPendingID, cause: cause, from: from, deadline: Date().addingTimeInterval(seconds))
+        return lastPendingID
     }
 
     /// A stretch of scrolling in the scroll layout, from the first change to 140 ms without one.
@@ -187,12 +200,13 @@ public final class PDFReaderSession {
     private func configureView(rebuild: Bool) {
         let paged = layout.mode == .pages
         #if canImport(UIKit)
-        // the page view controller reads the mode, the direction and the book flag when it is made
-        if view.isUsingPageViewController, rebuild || !paged { view.usePageViewController(false, withViewOptions: nil) }
-        #endif
-        #if canImport(UIKit)
-        // the page view controller turns along the display direction: sideways for pages, like a book
-        view.displayDirection = paged ? .horizontal : .vertical
+        // The page view controller shows one page at a time whatever the display mode says, so it turns the single
+        // pages only: a spread is laid out by the view itself and turned by the session (a swipe, a tap on an edge).
+        let usesController = paged && !layout.twoPages
+        // the controller reads the direction when it is made
+        if view.isUsingPageViewController, rebuild || !usesController { view.usePageViewController(false, withViewOptions: nil) }
+        // the controller turns along the display direction: sideways for pages, like a book
+        view.displayDirection = usesController ? .horizontal : .vertical
         #else
         view.displayDirection = .vertical
         #endif
@@ -205,7 +219,7 @@ public final class PDFReaderSession {
         case (true, true): .twoUp
         }
         #if canImport(UIKit)
-        if paged, !view.isUsingPageViewController { view.usePageViewController(true, withViewOptions: nil) }
+        if usesController, !view.isUsingPageViewController { view.usePageViewController(true, withViewOptions: nil) }
         #endif
         view.autoScales = true
         view.applyContentInsets(top: effectiveInsets.top, bottom: effectiveInsets.bottom)
@@ -343,8 +357,12 @@ public final class PDFReaderSession {
     @discardableResult
     private func refresh() -> Bool {
         guard hasStarted, let measured = measure() else { return false }
-        if visiblePages != measured.visible { visiblePages = measured.visible }
-        guard position != measured.position else { return false }
+        let visibleChanged = visiblePages != measured.visible
+        if visibleChanged { visiblePages = measured.visible }
+        guard position != measured.position else {
+            if visibleChanged { onEvent(.visiblePagesChanged(measured.visible)) }
+            return false
+        }
         position = measured.position
         onEvent(.positionChanged(measured.position))
         return true
@@ -386,19 +404,22 @@ public final class PDFReaderSession {
             view.alignTop(of: target, on: page, inset: effectiveInsets.top)
         } else if pageNumber(view.currentPage) != number {
             // the page view controller reports the change later: expected, and not a page turn
-            if pending == nil { pending = Pending(cause: nil, from: nil, deadline: Date().addingTimeInterval(0.6)) }
+            if pending == nil { expect(nil, from: nil) }
             view.go(to: page)
         }
     }
 
     private func move(to position: PDFReadingPosition, cause: PDFNavigationCause, before body: () -> Void = {}) async {
         guard hasStarted else {
+            // nothing is shown yet: the session starts there, with what `body` marks
+            body()
             initialPosition = position
             return
         }
+        // a scroll still under way ends here, so that the move starts from where it had come to
+        endMotion(report: true)
         let from = self.position
         let fromPlace = place
-        endMotion(report: true)
         relayout = nil
         if layout.mode == .scroll {
             isCommanding = true
@@ -410,17 +431,19 @@ public final class PDFReaderSession {
             if place != fromPlace, let now = self.position { onEvent(.navigated(cause: cause, from: from, to: now)) }
         } else {
             body()
-            pending = Pending(cause: cause, from: from, deadline: Date().addingTimeInterval(0.6))
+            let expected = expect(cause, from: from)
             restore(position)
             pageObserved()
-            // the page view controller (iOS) reports the new page a moment later
+            // The page view controller (iOS) reports the new page a moment later. A later move replaces what is
+            // expected: this one then stops waiting and leaves the other's expectation alone.
             var tries = 0
-            while pending != nil, tries < 12 {
+            let target = document.clampedPage(position.page)
+            while pending?.id == expected, tries < 12, holdsPageReports || !visiblePages.contains(target) {
                 try? await Task.sleep(for: .milliseconds(40))
                 pageObserved()
                 tries += 1
             }
-            pending = nil
+            if pending?.id == expected { pending = nil }
         }
     }
 
@@ -475,7 +498,7 @@ public final class PDFReaderSession {
     public func turnPage(forward: Bool) {
         guard hasStarted, layout.mode == .pages, forward ? view.canGoToNextPage : view.canGoToPreviousPage else { return }
         relayout = nil
-        pending = Pending(cause: .pageTurn, from: position, deadline: Date().addingTimeInterval(0.6))
+        expect(.pageTurn, from: position)
         if forward { view.goToNextPage(nil) } else { view.goToPreviousPage(nil) }
         pageObserved()
     }
@@ -484,7 +507,7 @@ public final class PDFReaderSession {
 
     /// The current page or the visible pages changed (a notification of the view).
     func pageObserved() {
-        guard hasStarted, !isCommanding else { return }
+        guard hasStarted, !isCommanding, !holdsPageReports else { return }
         guard layout.mode == .pages else {
             scrollObserved()
             return
@@ -560,6 +583,16 @@ public final class PDFReaderSession {
         }
     }
 
+    /// A sideways swipe over a spread that the view lays out itself (iOS: the page view controller turns the single
+    /// pages by itself). A swipe to the left goes on in a left-to-right book. Not while the page is enlarged (the
+    /// swipe then moves the page) or a selection is being made.
+    func swiped(toLeft: Bool) {
+        guard hasStarted, layout.mode == .pages, !view.turnsPagesItself, !hasSelection else { return }
+        guard view.scaleFactor <= view.scaleFactorForSizeToFit * 1.02 else { return }
+        clearSearchHighlight()
+        turnPage(forward: toLeft == (layout.direction == .leftToRight))
+    }
+
     /// A tap or click that the view did not use for anything else, at a point of the view.
     func tapped(at point: CGPoint) {
         guard hasStarted else { return }
@@ -607,7 +640,7 @@ public final class PDFReaderSession {
     func expectLink() {
         clearSearchHighlight()
         relayout = nil
-        pending = Pending(cause: .link, from: position, deadline: Date().addingTimeInterval(0.8))
+        expect(.link, from: position, within: 0.8)
     }
 
     func linkClicked(_ url: URL) {
@@ -675,6 +708,12 @@ public final class PDFReaderSession {
     }
 
     @_spi(Testing) public var pdfView: PDFView { view }
+
+    /// While true the session does not hear the view's page changes: the page view controller of iOS reports a page a
+    /// moment after it was asked for, and this is how a test makes that moment last.
+    @ObservationIgnored @_spi(Testing) public var holdsPageReports = false {
+        didSet { if !holdsPageReports, oldValue { pageObserved() } }
+    }
 }
 
 /// What tests do in place of the SwiftUI view and the reader's finger.
@@ -682,6 +721,25 @@ public final class PDFReaderSession {
     public static func set(top: CGFloat, bottom: CGFloat, on session: PDFReaderSession) {
         session.setContentInsets(top: top, bottom: bottom)
     }
+
+    /// A sideways swipe over the page.
+    public static func swipe(toLeft: Bool, on session: PDFReaderSession) {
+        session.swiped(toLeft: toLeft)
+    }
+
+    #if !canImport(UIKit)
+    /// Scrolls the view to a place the way the reader does (`byReader`, a live scroll) or the way PDFKit moves the
+    /// document by itself.
+    public static func scroll(to position: PDFReadingPosition, on session: PDFReaderSession, byReader: Bool) {
+        guard let page = session.document.pdf.page(at: session.document.clampedPage(position.page) - 1) else { return }
+        let geometry = PDFBookDocument.geometry(of: page)
+        let target = geometry.page(CGPoint(x: 0, y: position.offset * Double(geometry.displayedSize.height)))
+        session.view.scroll(asReader: byReader) {
+            session.view.go(to: PDFDestination(page: page, at: target))
+            session.view.alignTop(of: target, on: page, inset: 0)
+        }
+    }
+    #endif
 
     /// A tap at a point of the view (from its top-left corner).
     public static func tap(at point: CGPoint, on session: PDFReaderSession) {

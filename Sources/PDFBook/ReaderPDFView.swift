@@ -70,6 +70,12 @@ final class ReaderPDFView: PDFView {
         let tap = UITapGestureRecognizer(target: self, action: #selector(didTap(_:)))
         tap.delegate = tapDelegate
         addGestureRecognizer(tap)
+        for direction: UISwipeGestureRecognizer.Direction in [.left, .right] {
+            let swipe = UISwipeGestureRecognizer(target: self, action: #selector(didSwipe(_:)))
+            swipe.direction = direction
+            swipe.delegate = tapDelegate
+            addGestureRecognizer(swipe)
+        }
         observeNotifications()
     }
 
@@ -82,6 +88,9 @@ final class ReaderPDFView: PDFView {
     var contentScrollView: UIScrollView? {
         isUsingPageViewController ? nil : subviews.lazy.compactMap { $0 as? UIScrollView }.first
     }
+
+    /// Whether the view turns the pages by itself (the page view controller), so that a swipe is not the session's.
+    var turnsPagesItself: Bool { isUsingPageViewController }
 
     var isUserScrolling: Bool {
         guard let scrollView = contentScrollView else { return false }
@@ -158,7 +167,12 @@ final class ReaderPDFView: PDFView {
         session?.tapped(at: recognizer.location(in: self))
     }
 
-    /// The session's tap works beside PDFKit's own recognizers: it does not take the long press that starts a selection
+    @objc private func didSwipe(_ recognizer: UISwipeGestureRecognizer) {
+        guard recognizer.state == .ended else { return }
+        session?.swiped(toLeft: recognizer.direction == .left)
+    }
+
+    /// The session's tap and swipes work beside PDFKit's own recognizers: it does not take the long press that starts a selection
     /// or the tap that follows a link away from them. Its delegate is an object of its own: PDFView is the delegate of
     /// its recognizers and answers for those.
     private final class TapDelegate: NSObject, UIGestureRecognizerDelegate {
@@ -201,6 +215,9 @@ final class ReaderPDFView: PDFView {
     static var searchHighlightColor: NSColor { .systemYellow.withAlphaComponent(0.5) }
 
     private weak var observedClipView: NSClipView?
+    private weak var observedScrollView: NSScrollView?
+    /// Between the start and the end of a live scroll (a gesture with its momentum, the scroller's knob).
+    private var isLiveScrolling = false
     private var laidOutSize = CGSize.zero
     private var insets: (top: CGFloat, bottom: CGFloat) = (0, 0)
     private var performers: [() -> Void] = []
@@ -220,8 +237,24 @@ final class ReaderPDFView: PDFView {
         documentView?.enclosingScrollView
     }
 
-    /// AppKit does not say whether a scroll comes from the reader.
-    var isUserScrolling: Bool { false }
+    /// The view never turns the pages by itself: every page turn is the session's.
+    var turnsPagesItself: Bool { false }
+
+    /// Whether the reader is scrolling: during a live scroll, or while a scroll wheel event is being handled (a wheel
+    /// with notches has no start and no end; the event stays "current" after it was handled, hence its age).
+    var isUserScrolling: Bool {
+        if isLiveScrolling { return true }
+        guard let event = NSApp?.currentEvent, event.type == .scrollWheel else { return false }
+        return ProcessInfo.processInfo.systemUptime - event.timestamp < 0.1
+    }
+
+    /// Runs what moves the document as a scroll of the reader's (true) or as a move the view makes by itself.
+    func scroll(asReader: Bool, _ body: () -> Void) {
+        guard asReader, let scrollView = contentScrollView else { return body() }
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scrollView)
+        body()
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scrollView)
+    }
 
     func yFromTop(_ distance: CGFloat) -> CGFloat {
         isFlipped ? bounds.minY + distance : bounds.maxY - distance
@@ -251,7 +284,32 @@ final class ReaderPDFView: PDFView {
         session?.viewDidLayout(sizeChanged: changed)
     }
 
+    private func observeScrollView() {
+        let scrollView = contentScrollView
+        guard scrollView !== observedScrollView else { return }
+        let center = NotificationCenter.default
+        if let observedScrollView {
+            center.removeObserver(self, name: NSScrollView.willStartLiveScrollNotification, object: observedScrollView)
+            center.removeObserver(self, name: NSScrollView.didEndLiveScrollNotification, object: observedScrollView)
+        }
+        observedScrollView = scrollView
+        // a scroll view that went away never says that its scroll ended
+        isLiveScrolling = false
+        guard let scrollView else { return }
+        center.addObserver(self, selector: #selector(liveScrollDidStart), name: NSScrollView.willStartLiveScrollNotification, object: scrollView)
+        center.addObserver(self, selector: #selector(liveScrollDidEnd), name: NSScrollView.didEndLiveScrollNotification, object: scrollView)
+    }
+
+    @objc private func liveScrollDidStart() {
+        isLiveScrolling = true
+    }
+
+    @objc private func liveScrollDidEnd() {
+        isLiveScrolling = false
+    }
+
     private func observeClipView() {
+        observeScrollView()
         let clipView = contentScrollView?.contentView
         guard clipView !== observedClipView else { return }
         if let observedClipView {

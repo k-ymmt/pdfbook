@@ -75,6 +75,27 @@ private func lines(_ string: String, bounds: (Int, String) -> CGRect? = { _, _ i
         #expect(text.text == "うえあいくけかき")
     }
 
+    @Test func aColumnOfOneCharacterIsReadInItsPlace() throws {
+        // the last column of a paragraph holds one character: "吾輩" on the right, "猫" on the left
+        let page = "猫\n吾\n輩"
+        let cells = [CGRect(x: 100, y: 72, width: 16, height: 16), CGRect(x: 130, y: 72, width: 16, height: 16),
+                     CGRect(x: 130, y: 88, width: 16, height: 16)]
+        let text = PDFPageText(lines: lines(page) { index, _ in cells[index] })
+        #expect(text.text == "吾輩猫")
+        let match = try #require(text.matches(of: "輩猫").first)
+        #expect(match.sourceRanges.map { (page as NSString).substring(with: $0) } == ["輩", "猫"])
+    }
+
+    @Test func aLoneCharacterOutsideTheColumnsKeepsItsPlace() {
+        // a page number under the columns, reported first: it is not a column of the tier
+        let page = "3\n猫\nで\n吾\n輩"
+        let cells = [CGRect(x: 60, y: 700, width: 8, height: 12), CGRect(x: 100, y: 72, width: 16, height: 16),
+                     CGRect(x: 100, y: 88, width: 16, height: 16), CGRect(x: 130, y: 72, width: 16, height: 16),
+                     CGRect(x: 130, y: 88, width: 16, height: 16)]
+        let text = PDFPageText(lines: lines(page) { index, _ in cells[index] })
+        #expect(text.text == "3 吾輩猫で")
+    }
+
     @Test func singleCharactersThatAreNotStackedStayLines() {
         let text = PDFPageText(lines: lines("A\nB") { index, _ in CGRect(x: 100 + Double(index) * 200, y: 72, width: 10, height: 12) })
         #expect(text.text == "A B")

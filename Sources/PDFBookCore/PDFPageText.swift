@@ -105,15 +105,38 @@ public struct PDFPageText: Sendable {
 
     /// Reverses each run of columns that goes from left to right: the columns of vertical text are read from the
     /// right. A column further left than the one before it starts a new run (the next tier of the page).
+    ///
+    /// A single character counts as a column of its own (the last column of a paragraph may hold one character) when it
+    /// stands in a run with a real column and beside it: a lone character elsewhere (a page number under the columns)
+    /// keeps its place.
     private static func readingOrder(_ groups: [[Line]]) -> [[Line]] {
         var result: [[Line]] = []
         var run: [[Line]] = []
         func columnX(_ group: [Line]) -> CGFloat? {
-            group.count > 1 ? group[0].bounds?.midX : nil
+            guard group.count > 1 || group[0].text.count == 1 else { return nil }
+            return group[0].bounds?.standardized.midX
         }
         func flush() {
-            result += run.reversed()
-            run = []
+            defer { run = [] }
+            let columns = run.filter { $0.count > 1 }
+            guard !columns.isEmpty else {
+                result += run
+                return
+            }
+            // the tier: from the top of the highest column to the bottom of the lowest
+            let top = columns.compactMap { $0.first?.bounds?.standardized.minY }.min() ?? 0
+            let bottom = columns.compactMap { $0.last?.bounds?.standardized.maxY }.max() ?? 0
+            var part: [[Line]] = []
+            for group in run {
+                if group.count == 1, let midY = group[0].bounds?.standardized.midY, midY < top || midY > bottom {
+                    result += part.reversed()
+                    part = []
+                    result.append(group)
+                } else {
+                    part.append(group)
+                }
+            }
+            result += part.reversed()
         }
         for group in groups {
             guard let x = columnX(group) else {

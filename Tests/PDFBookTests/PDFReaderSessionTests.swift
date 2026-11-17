@@ -182,6 +182,92 @@ import Testing
         #expect(session.pdfView.highlightedSelections == nil)
     }
 
+    @Test func aSearchHitShownBeforeTheViewAppearsIsMarkedWhenItDoes() async throws {
+        let document = try PDFBookDocument(url: folder.write(Fixture.paper().data(), named: "paper.pdf"))
+        let session = PDFReaderSession(document: document)
+        var hits: [PDFSearchHit] = []
+        for try await hit in document.search("continues here") { hits.append(hit) }
+        await session.show(try #require(hits.first))
+        session.layOut(size: Self.size)
+        #expect(session.position?.page == 3)
+        #expect(session.pdfView.highlightedSelections?.first?.string == "continues here")
+    }
+
+    @Test func layingOutOnePageInsteadOfTwoReportsThePagesOnScreen() throws {
+        let (session, log) = try session(PDFReaderLayout(mode: .pages, twoPages: true))
+        session.turnPage(forward: true)
+        #expect(session.visiblePages == [2, 3])
+        log.events = []
+        session.layout.twoPages = false
+        #expect(session.position?.page == 2)
+        #expect(session.visiblePages == [2])
+        #expect(log.positions.isEmpty)
+        #expect(log.events.contains { if case .visiblePagesChanged([2]) = $0 { true } else { false } })
+    }
+
+    @Test func aSwipeTurnsASpreadTheWayTheBookGoes() throws {
+        let (session, log) = try session(PDFReaderLayout(mode: .pages, twoPages: true))
+        PDFReaderViewInsets.swipe(toLeft: true, on: session)
+        #expect(session.visiblePages == [2, 3])
+        PDFReaderViewInsets.swipe(toLeft: true, on: session)
+        #expect(session.visiblePages == [4, 5])
+        PDFReaderViewInsets.swipe(toLeft: false, on: session)
+        #expect(session.visiblePages == [2, 3])
+        #expect(log.navigations.map(\.cause) == [.pageTurn, .pageTurn, .pageTurn])
+        session.layout.direction = .rightToLeft
+        PDFReaderViewInsets.swipe(toLeft: true, on: session)
+        #expect(session.visiblePages == [1])
+        // an enlarged page is moved by the swipe, not turned
+        session.pdfView.scaleFactor = session.pdfView.scaleFactorForSizeToFit * 2
+        PDFReaderViewInsets.swipe(toLeft: false, on: session)
+        #expect(session.visiblePages == [1])
+        // nothing to turn in the scroll layout
+        session.layout = PDFReaderLayout()
+        let place = session.place
+        PDFReaderViewInsets.swipe(toLeft: true, on: session)
+        #expect(session.place == place)
+    }
+
+    @Test func aLaterMoveIsNotForgottenWhenAnEarlierOneStopsWaiting() async throws {
+        let (session, log) = try session(PDFReaderLayout(mode: .pages))
+        // the view reports its page late, as the page view controller of iOS does
+        session.holdsPageReports = true
+        async let first: Void = session.go(toPage: 3)
+        try await Task.sleep(for: .milliseconds(300))
+        async let second: Void = session.go(toPage: 6)
+        // the first move has given up waiting by now (12 x 40 ms); the second is still expected
+        try await Task.sleep(for: .milliseconds(300))
+        session.holdsPageReports = false
+        _ = await (first, second)
+        #expect(session.position?.page == 6)
+        #expect(log.navigations.map(\.cause) == [.jump])
+        #expect(log.navigations.first?.from == 1)
+    }
+
+    #if !canImport(UIKit)
+    @Test func theReadersOwnScrollRightAfterALayoutIsKept() throws {
+        let (session, _) = try session()
+        // what the view does by itself right after it was laid out is undone …
+        PDFReaderViewInsets.scroll(to: PDFReadingPosition(page: 2, offset: 0.5), on: session, byReader: false)
+        #expect(session.position?.page == 1)
+        #expect(session.position?.offset == 0)
+        // … the reader's scrolling is not
+        PDFReaderViewInsets.scroll(to: PDFReadingPosition(page: 2, offset: 0.5), on: session, byReader: true)
+        #expect(session.position?.page == 2)
+    }
+
+    @Test func aJumpDuringAScrollStartsFromWhereTheScrollHadComeTo() async throws {
+        let (session, log) = try session()
+        // two steps of one scroll, the second before the position is reported again
+        PDFReaderViewInsets.scroll(to: PDFReadingPosition(page: 2), on: session, byReader: true)
+        PDFReaderViewInsets.scroll(to: PDFReadingPosition(page: 3), on: session, byReader: true)
+        await session.go(toPage: 6)
+        #expect(log.navigations.map(\.cause) == [.scroll, .jump])
+        #expect(log.navigations.map(\.from) == [1, 3])
+        #expect(log.navigations.map(\.to) == [3, 6])
+    }
+    #endif
+
     @Test func aSelectionIsAPlaceWithOneRectanglePerLine() throws {
         let (session, log) = try session()
         let page = try #require(session.document.pdf.page(at: 0))
