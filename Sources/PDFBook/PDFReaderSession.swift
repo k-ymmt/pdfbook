@@ -159,7 +159,11 @@ public final class PDFReaderSession {
     @ObservationIgnored private var pending: Pending?
     @ObservationIgnored private var lastPendingID = 0
     @ObservationIgnored private var motion: Motion?
+    /// Waits for the scrolling to stop: one task per motion, not one per change of the offset.
     @ObservationIgnored private var motionEnd: Task<Void, Never>?
+    @ObservationIgnored private var lastScrollChange = Date.distantPast
+    /// A motion ends this long after the last change of the offset.
+    private static let motionEndDelay: TimeInterval = 0.14
     @ObservationIgnored private var contentInsets: (top: CGFloat, bottom: CGFloat) = (0, 0)
     @ObservationIgnored private var hasSelection = false
     @ObservationIgnored private var relayout: Relayout?
@@ -191,7 +195,7 @@ public final class PDFReaderSession {
         return lastPendingID
     }
 
-    /// A stretch of scrolling in the scroll layout, from the first change to 140 ms without one.
+    /// A stretch of scrolling in the scroll layout, from the first change to `motionEndDelay` without one.
     private struct Motion {
         var from: PDFReadingPosition?
         /// nil: the reader's own scrolling
@@ -413,12 +417,8 @@ public final class PDFReaderSession {
             isCommanding = wasCommanding
             lastCommandEnd = Date()
         }
-        let number = document.clampedPage(position.page)
-        guard let page = document.pdf.page(at: number - 1) else { return }
+        guard case let (number, page, target)? = document.target(of: position) else { return }
         if layout.mode == .scroll {
-            let geometry = PDFBookDocument.geometry(of: page)
-            let y = position.offset * Double(geometry.displayedSize.height)
-            let target = geometry.page(CGPoint(x: 0, y: y))
             view.go(to: PDFDestination(page: page, at: target))
             view.alignTop(of: target, on: page, inset: effectiveInsets.top)
         } else if pageNumber(view.currentPage) != number {
@@ -573,15 +573,25 @@ public final class PDFReaderSession {
             motion?.lastEmit = now
             refresh()
         }
-        motionEnd?.cancel()
+        lastScrollChange = now
+        guard motionEnd == nil else { return }
         motionEnd = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(140))
-            guard !Task.isCancelled, let self else { return }
-            if view.isUserScrolling {
-                // a finger resting on the page: not over yet
-                scrollObserved()
-            } else {
-                endMotion(report: true)
+            var wait = Self.motionEndDelay
+            while true {
+                try? await Task.sleep(for: .seconds(wait))
+                guard !Task.isCancelled, let self else { return }
+                let quiet = Date().timeIntervalSince(lastScrollChange)
+                if quiet < Self.motionEndDelay {
+                    // the offset changed meanwhile
+                    wait = Self.motionEndDelay - quiet
+                } else if view.isUserScrolling {
+                    // a finger resting on the page: not over yet
+                    wait = Self.motionEndDelay
+                    scrollObserved()
+                } else {
+                    endMotion(report: true)
+                    return
+                }
             }
         }
     }
@@ -799,9 +809,7 @@ public final class PDFReaderSession {
     /// Scrolls the view to a place the way the reader does (`byReader`, a live scroll) or the way PDFKit moves the
     /// document by itself.
     public static func scroll(to position: PDFReadingPosition, on session: PDFReaderSession, byReader: Bool) {
-        guard let page = session.document.pdf.page(at: session.document.clampedPage(position.page) - 1) else { return }
-        let geometry = PDFBookDocument.geometry(of: page)
-        let target = geometry.page(CGPoint(x: 0, y: position.offset * Double(geometry.displayedSize.height)))
+        guard case let (_, page, target)? = session.document.target(of: position) else { return }
         session.view.scroll(asReader: byReader) {
             session.view.go(to: PDFDestination(page: page, at: target))
             session.view.alignTop(of: target, on: page, inset: 0)
@@ -830,6 +838,15 @@ public final class PDFReaderSession {
 }
 
 extension PDFBookDocument {
+    /// The page of a position (clamped to the document) and the point of it that goes to the top of the view, in page
+    /// coordinates; nil when the document has no pages.
+    func target(of position: PDFReadingPosition) -> (number: Int, page: PDFPage, point: CGPoint)? {
+        let number = clampedPage(position.page)
+        guard let page = pdf.page(at: number - 1) else { return nil }
+        let geometry = Self.geometry(of: page)
+        return (number, page, geometry.page(CGPoint(x: 0, y: position.offset * Double(geometry.displayedSize.height))))
+    }
+
     /// The position that shows a place of a page: `top` points from the top of the displayed page (clamped to it).
     public func position(page: Int, top: Double) -> PDFReadingPosition {
         let number = clampedPage(page)
@@ -859,6 +876,11 @@ extension PDFBookDocument {
     public func search(_ query: String) -> AsyncThrowingStream<PDFSearchHit, any Error> {
         let store = textStore, count = pageCount
         return AsyncThrowingStream { continuation in
+            // nothing to look for: no page is read
+            guard !PDFPageText.normalized(query).isEmpty else {
+                continuation.finish()
+                return
+            }
             let task = Task.detached(priority: .userInitiated) {
                 var id = 0
                 for index in 0 ..< count {

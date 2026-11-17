@@ -1,6 +1,6 @@
 import CoreGraphics
 import Foundation
-import PDFBookCore
+@testable import PDFBookCore
 import Testing
 
 @Suite struct PDFFragmentTests {
@@ -66,6 +66,12 @@ import Testing
         let fragment = try #require(PDFFragment("page=2&highlight=72.5,523.25,96,110.10"))
         #expect(fragment.parts[0].rects[0].left == 72.5)
         #expect(fragment.description == "page=2&highlight=72.5,523.25,96,110.1")
+    }
+
+    @Test func aTinyNegativeNumberIsWrittenAsZero() throws {
+        #expect(PDFFragment.Rect(left: -0.001, right: 10, top: -0.004, bottom: 20).written == "0,10,0,20")
+        let fragment = try #require(PDFFragment(parts: [.init(page: 1, rects: [.init(left: -0.001, right: 10, top: 0, bottom: 20)])]))
+        #expect(fragment.description == "page=1&highlight=0,10,0,20")
     }
 
     @Test func lineRectanglesAreRoundedOutward() throws {

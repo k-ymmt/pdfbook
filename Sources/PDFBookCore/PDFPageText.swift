@@ -53,7 +53,7 @@ public struct PDFPageText: Sendable {
         var pieces: [Piece] = []
         for group in Self.readingOrder(Self.grouped(lines)) {
             guard let first = group.first?.text.first else { continue }
-            if let last = text.last, !(Self.wrapsWithoutSpace(last) && Self.wrapsWithoutSpace(first)) {
+            if let last = text.last, Self.needsSpace(between: last, and: first) {
                 text += " "
                 length += 1
             }
@@ -71,6 +71,11 @@ public struct PDFPageText: Sendable {
     /// Whether the page has no text (a scan without a text layer).
     public var isEmpty: Bool { text.isEmpty }
 
+    /// About how much memory the value holds, for a cache that keeps many pages.
+    package var estimatedByteCount: Int {
+        text.utf8.count + pieces.count * MemoryLayout<Piece>.stride
+    }
+
     // MARK: Lines
 
     /// Lines that are read as one: a line of horizontal text alone, or the characters of one column.
@@ -84,7 +89,7 @@ public struct PDFPageText: Sendable {
             line.range.length -= line.text.utf16.count - trimmed.utf16.count
             line.text = trimmed
             guard !line.text.isEmpty else { continue }
-            let cell = line.text.count == 1 ? line.bounds?.standardized : nil
+            let cell = line.text.isSingleCharacter ? line.bounds?.standardized : nil
             if let cell, let previous = previousCell, isBelow(cell, previous) {
                 groups[groups.count - 1].append(line)
             } else {
@@ -113,7 +118,7 @@ public struct PDFPageText: Sendable {
         var result: [[Line]] = []
         var run: [[Line]] = []
         func columnX(_ group: [Line]) -> CGFloat? {
-            guard group.count > 1 || group[0].text.count == 1 else { return nil }
+            guard group.count > 1 || group[0].text.isSingleCharacter else { return nil }
             return group[0].bounds?.standardized.midX
         }
         func flush() {
@@ -168,13 +173,18 @@ public struct PDFPageText: Sendable {
         }
     }
 
+    /// Whether two lines are joined with a space: always, except between two CJK characters.
+    static func needsSpace(between last: Character, and first: Character) -> Bool {
+        !(wrapsWithoutSpace(last) && wrapsWithoutSpace(first))
+    }
+
     /// Joins the lines of a selection the way a page's lines are joined (a space, except between CJK characters).
     public static func joined<S: StringProtocol>(_ lines: [S]) -> String {
         var text = ""
         for line in lines {
-            let line = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+            let line = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard let first = line.first else { continue }
-            if let last = text.last, !(wrapsWithoutSpace(last) && wrapsWithoutSpace(first)) { text += " " }
+            if let last = text.last, needsSpace(between: last, and: first) { text += " " }
             text += line
         }
         return text
@@ -192,14 +202,18 @@ public struct PDFPageText: Sendable {
         var search = NSRange(location: 0, length: string.length)
         while search.length > 0 {
             let found = string.range(of: query, options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], range: search)
-            guard found.location != NSNotFound, found.length > 0, let range = Range(found, in: text) else { break }
-            matches.append(Match(range: range, sourceRanges: sourceRanges(forUTF16: found)))
+            guard found.location != NSNotFound, found.length > 0 else { break }
+            // a match that cuts a character in two (half of a surrogate pair) is skipped, not the rest of the page
+            if let range = Range(found, in: text) {
+                matches.append(Match(range: range, sourceRanges: sourceRanges(forUTF16: found)))
+            }
             search = NSRange(location: found.upperBound, length: string.length - found.upperBound)
         }
         return matches
     }
 
-    static func normalized(_ query: String) -> String {
+    /// The query as it is searched for: runs of whitespace as one space, none at either end. Empty: nothing to find.
+    package static func normalized(_ query: String) -> String {
         query.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
@@ -210,7 +224,14 @@ public struct PDFPageText: Sendable {
 
     private func sourceRanges(forUTF16 range: NSRange) -> [NSRange] {
         var result: [NSRange] = []
-        for piece in pieces {
+        // the pieces are in the order of `text`: start at the last one that begins at or before the range
+        var low = 0, high = pieces.count
+        while low < high {
+            let middle = (low + high) / 2
+            if pieces[middle].start <= range.location { low = middle + 1 } else { high = middle }
+        }
+        for piece in pieces[max(0, low - 1)...] {
+            guard piece.start < range.upperBound else { break }
             let start = max(range.location, piece.start), end = min(range.upperBound, piece.start + piece.source.length)
             guard start < end else { continue }
             let source = NSRange(location: piece.source.location + start - piece.start, length: end - start)
@@ -237,6 +258,13 @@ public struct PDFPageText: Sendable {
     /// The first characters of the page (for the text of a link to the page). Empty for a page without text.
     public func excerpt(maxLength: Int = 40) -> String {
         String(text.prefix(max(0, maxLength)))
+    }
+}
+
+extension StringProtocol {
+    /// Whether the string is exactly one character, without counting the characters of a long line.
+    package var isSingleCharacter: Bool {
+        !isEmpty && index(after: startIndex) == endIndex
     }
 }
 

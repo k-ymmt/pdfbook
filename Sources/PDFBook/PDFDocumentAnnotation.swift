@@ -222,7 +222,8 @@ extension PDFTextStore {
     }
 
     func locate(_ quote: String, near fragment: PDFFragment) -> PDFFragment? {
-        guard let document, !document.isLocked, document.pageCount > 0 else { return nil }
+        // a quote of whitespace only is found nowhere: no page is read for it
+        guard !PDFPageText.normalized(quote).isEmpty, let document, !document.isLocked, document.pageCount > 0 else { return nil }
         let count = document.pageCount
         let origin = min(max(1, fragment.page), count)
         let old = fragment.parts[0].rects.first

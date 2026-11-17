@@ -414,6 +414,7 @@ import Testing
         #expect(await document.locate("Page 7 line 2", near: PDFFragment(page: 1))?.page == 7)
         #expect(await document.locate("Page 2 line 9", near: PDFFragment(page: 99))?.page == 2)
         #expect(await document.locate("no such words anywhere", near: old) == nil)
+        #expect(await document.locate(" \n ", near: old) == nil)
 
         // on the page itself, the match nearest to the old place: "lorem ipsum" is on every line
         let line9 = try fragment(of: "Page 4 line 9", onPage: 4, in: session)

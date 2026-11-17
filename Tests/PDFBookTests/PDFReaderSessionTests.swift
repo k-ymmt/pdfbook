@@ -256,6 +256,27 @@ import Testing
         #expect(session.position?.page == 2)
     }
 
+    @Test func aScrollEndsOnceTheOffsetStopsChanging() async throws {
+        let (session, log) = try session()
+        func scrolling() -> [Bool] {
+            log.events.compactMap { event in
+                if case .scrolling(let value) = event { return value }
+                return nil
+            }
+        }
+        PDFReaderViewInsets.scroll(to: PDFReadingPosition(page: 2), on: session, byReader: true)
+        try await Task.sleep(for: .milliseconds(80))
+        PDFReaderViewInsets.scroll(to: PDFReadingPosition(page: 3), on: session, byReader: true)
+        // the second change started the wait again
+        try await Task.sleep(for: .milliseconds(80))
+        #expect(scrolling() == [true])
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(scrolling() == [true, false])
+        #expect(log.navigations.map(\.cause) == [.scroll])
+        #expect(log.navigations.map(\.from) == [1])
+        #expect(log.navigations.map(\.to) == [3])
+    }
+
     @Test func aJumpDuringAScrollStartsFromWhereTheScrollHadComeTo() async throws {
         let (session, log) = try session()
         // two steps of one scroll, the second before the position is reported again
