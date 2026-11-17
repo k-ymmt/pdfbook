@@ -46,6 +46,17 @@ import AppKit
         #endif
     }
 
+    #if canImport(UIKit)
+    /// Tells the view controllers inside a view that they appear, as a window would.
+    private static func appear(_ view: UIView) {
+        if let controller = view.next as? UIViewController, controller.view === view {
+            controller.beginAppearanceTransition(true, animated: false)
+            controller.endAppearanceTransition()
+        }
+        view.subviews.forEach(appear)
+    }
+    #endif
+
     private func session(_ pdf: MiniPDF = Fixture.paper(), _ layout: PDFReaderLayout = PDFReaderLayout(),
                          at position: PDFReadingPosition? = nil) throws -> (PDFReaderSession, EventLog, URL)
     {
@@ -301,15 +312,10 @@ import AppKit
         let (session, log, _) = try session(Fixture.paper(), PDFReaderLayout(mode: .pages))
         // the start of the first line lies in the left quarter of the view, where a tap turns the page
         #if canImport(UIKit)
-        // the page view controller of iOS builds the view of a page only in a window
-        let scene = try #require(UIApplication.shared.connectedScenes.lazy.compactMap { $0 as? UIWindowScene }.first,
-                                 "the tests run in a host that has a window scene")
-        let window = UIWindow(windowScene: scene)
-        window.frame = CGRect(origin: .zero, size: Self.size)
-        window.addSubview(session.pdfView)
-        window.isHidden = false
+        // The page view controller of iOS builds the view of a page when it appears, which a view without a window
+        // never does (a package's tests have no window scene to make one in): it is told that it appears
+        Self.appear(session.pdfView)
         session.layOut(size: Self.size)
-        defer { withExtendedLifetime(window) {} }
         #endif
         let place = try fragment(of: "Chapter", onPage: 1, in: session)
         let rect = place.parts[0].rects[0].cgRect
